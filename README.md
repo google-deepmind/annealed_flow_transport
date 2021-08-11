@@ -66,6 +66,15 @@ We have not open sourced code for writing results to disk. The function
 `train.run_experiments` called from `main.py` returns a `NamedDict` containing a
 summary of results that could be caught and recorded if required.
 
+## License information
+
+The code is licensed under the Apache 2.0 license, which can be found in full in
+the `LICENSE` file.
+
+We have released a pickle model parameters file for the VAE example which is
+licensed under the Creative Commons Attribution 4.0 International (CC BY 4.0),
+Full text is found at https://creativecommons.org/licenses/by/4.0/legalcode.
+
 ## Giving Credit
 
 If you use this code in your work, please cite the following paper.
