@@ -1,16 +1,25 @@
-# Annealed Flow Transport Monte Carlo
-
-Open source implementation accompanying ICML 2021 paper
-
-by Michael Arbel*, Alexander G. D. G. Matthews* and Arnaud Doucet.
+# Continual Repeated Annealed Flow Transport Monte Carlo (CRAFT)
+# and Annealed Flow Transport Monte Carlo (AFT)
 
 The release contains implementations of
-* Annealed Flow Transport Monte Carlo (AFT), this paper.
+
+* Continual Repeated Annealed Flow Transport Monte Carlo (CRAFT), (this paper).
+* Annealed Flow Transport Monte Carlo (AFT), Arbel et al (2021).
+* Stochastic Normalizing Flows (SNF), Wu et al (2020).
 * Sequential Monte Carlo samplers (SMC), Del Moral et al (2006).
 * Variational inference with Normalizing Flows (VI), Rezende and Mohamed (2015).
+* Particle Markov Chain Monte Carlo (PIMH), Andrieu et al (2010).
 
-This implementation of AFT is based on Algorithm 2 in the paper.
+The implementation of AFT is based on Algorithm 2 of that paper.
 See https://arxiv.org/abs/2102.07501 for more details.
+
+The implementation of SNFs differs from the original one in that it exploits
+the connection with Annealed Importance Sampling with added normalizing flows.
+The training dynamics are still the same. 
+
+The implementation of Particle Markov Chain Monte Carlo is specialized to
+the case of a final target of interest rather than a time series and 
+assumes an independent proposal, which can be based on SMC, VI or CRAFT.
 
 ## Installation
 
@@ -53,8 +62,9 @@ python main.py --config=configs/single_normal.py
 ```
 
 This example anneals between two one dimensional normal distributions with the
-same scale and two different locations using AFT. The script should print a
+same scale and two different locations using CRAFT. The script should print a
 sequence of steps and return a log normalizing constant estimate.
+
 
 The config files use the `ConfigDict` from
 [ml_collections](https://github.com/google/ml_collections) to specify all
@@ -62,7 +72,15 @@ details of the desired experiment. For example: the algorithm, the MCMC kernel,
 and the base distribution and target distribution. More examples can be found in
 the `configs` directory.
 
-We have not open sourced code for writing results to disk. The function
+If you specify a model snapshot destination in the config file by setting 
+`config.save_checkpoint = True` and specifying `config.params_filename` then you can
+store a file to evaluate using PIMH. This is then called using:
+
+```
+python evaluate.py --config=configs/single_normal.py
+```
+
+We have not released code for writing results to disk. The function
 `train.run_experiments` called from `main.py` returns a `NamedDict` containing a
 summary of results that could be caught and recorded if required.
 
@@ -77,7 +95,17 @@ Full text is found at https://creativecommons.org/licenses/by/4.0/legalcode.
 
 ## Giving Credit
 
-If you use this code in your work, please cite the following paper.
+If you use this code in your work, please cite the corresponding paper. If you use our baselines such as SMC, SNF, PIMH, please cite the paper of the two below where we first used the method.
+
+```
+@article{CRAFT2022,
+  title={Continual Repeated Annealed Flow Transport Monte Carlo},
+  author={Alexander G. D. G. Matthews and Michael Arbel and Danilo J. Rezende and Arnaud Doucet},
+  Journal = {arXiv},
+  year={2022},
+  month = {Jan}
+}
+```
 
 ```
 @InProceedings{AnnealedFlowTransport2021,

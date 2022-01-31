@@ -17,7 +17,7 @@
 import abc
 import pickle
 
-from annealed_flow_transport import train_vae
+from annealed_flow_transport import vae as vae_lib
 import annealed_flow_transport.aft_types as tp
 import annealed_flow_transport.cox_process_utils as cp_utils
 import chex
@@ -353,12 +353,12 @@ class AutoEncoderLikelihood(LogDensity):
     super().__init__(config, num_dim)
     self._vae_params = self._get_vae_params(config.params_filename)
     test_batch_size = 1
-    test_ds = train_vae.load_dataset(tfds.Split.TEST, test_batch_size)
+    test_ds = vae_lib.load_dataset(tfds.Split.TEST, test_batch_size)
     for unused_index in range(self._config.image_index):
       unused_batch = next(test_ds)
     self._test_image = next(test_ds)["image"]
     assert self._test_image.shape[0] == 1  # Batch size needs to be 1.
-    assert self._test_image.shape[1:] == train_vae.MNIST_IMAGE_SHAPE
+    assert self._test_image.shape[1:] == vae_lib.MNIST_IMAGE_SHAPE
     self.entropy_eval = hk.transform(self.cross_entropy_eval_func)
 
   def _check_constructor_inputs(self, config: ConfigDict, num_dim: int):
@@ -392,12 +392,12 @@ class AutoEncoderLikelihood(LogDensity):
     """
     chex.assert_rank(latent, 1)
     chex.assert_rank(data, 4)  # Shape should be (1, 28, 28, 1) hence rank 4.
-    vae = train_vae.ConvVAE()
+    vae = vae_lib.ConvVAE()
     # New axis here required for batch size = 1 for VAE compatibility.
     batch_latent = latent[None, :]
     logits = vae.decoder(batch_latent)
     chex.assert_equal_shape([logits, data])
-    return train_vae.binary_cross_entropy_from_logits(logits, data)
+    return vae_lib.binary_cross_entropy_from_logits(logits, data)
 
   def log_prior(self, latent: Array) -> Array:
     """Latent shape (num_dim,) -> standard multivariate log density."""
@@ -418,3 +418,61 @@ class AutoEncoderLikelihood(LogDensity):
 
   def evaluate_log_density(self, x: Array) -> Array:
     return jax.vmap(self.total_log_probability)(x)
+
+
+def phi_four_log_density(x: Array,
+                         mass_squared: Array,
+                         bare_coupling: Array) -> Array:
+  """Evaluate the phi_four_log_density.
+
+  Args:
+    x: Array of size (L_x, L_y)- values on 2D lattice.
+    mass_squared: Scalar representing bare mass squared.
+    bare_coupling: Scare representing bare coupling.
+
+  Returns:
+    Scalar corresponding to log_density.
+  """
+  chex.assert_rank(x, 2)
+  chex.assert_rank(mass_squared, 0)
+  chex.assert_rank(bare_coupling, 0)
+  mass_term = mass_squared * jnp.sum(jnp.square(x))
+  quadratic_term = bare_coupling * jnp.sum(jnp.power(x, 4))
+  roll_x_plus = jnp.roll(x, shift=1, axis=0)
+  roll_x_minus = jnp.roll(x, shift=-1, axis=0)
+  roll_y_plus = jnp.roll(x, shift=1, axis=1)
+  roll_y_minus = jnp.roll(x, shift=-1, axis=1)
+  # D'alembertian operator acting on field phi.
+  dalembert_phi = 4.*x - roll_x_plus - roll_x_minus - roll_y_plus - roll_y_minus
+  kinetic_term = jnp.sum(x * dalembert_phi)
+  action_density = kinetic_term + mass_term + quadratic_term
+  return -action_density
+
+
+class PhiFourTheory(LogDensity):
+  """Log density for phi four field theory in two dimensions."""
+
+  def __init__(self,
+               config: ConfigDict,
+               num_dim: int):
+    super().__init__(config, num_dim)
+    self._num_grid_per_dim = int(np.sqrt(num_dim))
+
+  def  _check_constructor_inputs(self, config: ConfigDict, num_dim: int):
+    expected_members_types = [("mass_squared", float),
+                              ("bare_coupling", float)]
+    self._check_members_types(config, expected_members_types)
+    num_grid_per_dim = int(np.sqrt(num_dim))
+    if num_grid_per_dim * num_grid_per_dim != num_dim:
+      msg = ("num_dim needs to be a square number for PhiFourTheory "
+             "density.")
+      raise ValueError(msg)
+
+  def reshape_and_call(self, x: Array) -> Array:
+    return phi_four_log_density(jnp.reshape(x, (self._num_grid_per_dim,
+                                                self._num_grid_per_dim)),
+                                self._config.mass_squared,
+                                self._config.bare_coupling)
+
+  def evaluate_log_density(self, x: Array) -> Array:
+    return jax.vmap(self.reshape_and_call)(x)

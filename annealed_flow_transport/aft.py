@@ -91,7 +91,9 @@ def update_tuples(
         key=subkey,
         log_density=log_density,
         step=step,
-        config=config)
+        use_resampling=config.use_resampling,
+        use_markov=config.use_markov,
+        resample_threshold=config.resample_threshold)
     samples_list.append(new_samples)
     log_weights_list.append(new_log_weights)
     acceptance_tuple_list.append(acceptance_tuple)
@@ -144,12 +146,10 @@ def flow_estimate_step(loop_state: OptimizationLoopState,
                              loop_state.best_index)
 
   # Update the logs of train and validation vfes.
-  new_train_vfes = jax.ops.index_update(loop_state.opt_vfes.train_vfes,
-                                        loop_state.inner_step,
-                                        train_vfe)
-  new_validation_vfes = jax.ops.index_update(
-      loop_state.opt_vfes.validation_vfes, loop_state.inner_step,
-      validation_vfe)
+  new_train_vfes = loop_state.opt_vfes.train_vfes.at[loop_state.inner_step].set(
+      train_vfe)
+  new_validation_vfes = loop_state.opt_vfes.validation_vfes.at[
+      loop_state.inner_step].set(validation_vfe)
 
   new_opt_vfes = VfesTuple(train_vfes=new_train_vfes,
                            validation_vfes=new_validation_vfes)
@@ -368,8 +368,7 @@ def outer_loop_aft(opt_update: UpdateFn,
     zero_vfe_tuple = VfesTuple(train_vfes=jnp.zeros(opt_iters),
                                validation_vfes=jnp.zeros(opt_iters))
     log_step_output(samples_tuple, log_weights_tuple, zero_vfe_tuple, 0., 1.,
-                    1., config.write_samples)
-
+                    1.)
   logging.info('Performing initial step redundantly for accurate timing...')
   initial_start_time = time.time()
   inner_loop_jit(key, samples_tuple, log_weights_tuple, 1)
@@ -385,12 +384,13 @@ def outer_loop_aft(opt_update: UpdateFn,
         subkey, samples_tuple, log_weights_tuple, step)
     acceptance_nuts = float(np.asarray(test_acceptance[0]))
     acceptance_hmc = float(np.asarray(test_acceptance[1]))
+    acceptance_rwm = float(np.asarray(test_acceptance[2]))
     log_normalizer_estimate += log_normalizer_increment
     if step % config.report_step == 0:
       beta = density_by_step.get_beta(step)
       logging.info(
-          'Step %05d: beta %f Acceptance rate NUTS %f Acceptance rate HMC %f',
-          step, beta, acceptance_nuts, acceptance_hmc
+          'Step %05d: beta %f Acceptance rate NUTS %f Acceptance rate HMC %f Acceptance rate RWM %f',
+          step, beta, acceptance_nuts, acceptance_hmc, acceptance_rwm
           )
       if log_step_output is not None:
         log_step_output(samples_tuple, log_weights_tuple,

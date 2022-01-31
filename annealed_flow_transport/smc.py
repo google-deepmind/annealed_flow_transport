@@ -42,6 +42,7 @@ MarkovKernelApply = tp.MarkovKernelApply
 LogDensityByStep = tp.LogDensityByStep
 assert_equal_shape = chex.assert_equal_shape
 AlgoResultsTuple = tp.AlgoResultsTuple
+ParticleState = tp.ParticleState
 
 
 def inner_loop(
@@ -87,6 +88,61 @@ def inner_loop(
   return markov_samples, log_weights_resampled, log_normalizer_increment, acceptance_tuple
 
 
+def get_short_inner_loop(markov_kernel_by_step: MarkovKernelApply,
+                         density_by_step: LogDensityByStep,
+                         config):
+  """Get a short version of inner loop."""
+  def short_inner_loop(rng_key: RandomKey,
+                       loc_samples: Array,
+                       loc_log_weights: Array,
+                       loc_step: int):
+    return inner_loop(rng_key,
+                      markov_kernel_by_step,
+                      loc_samples,
+                      loc_log_weights,
+                      density_by_step,
+                      loc_step,
+                      config)
+  return short_inner_loop
+
+
+def fast_outer_loop_smc(density_by_step: LogDensityByStep,
+                        initial_sampler: InitialSampler,
+                        markov_kernel_by_step: MarkovKernelApply,
+                        key: RandomKey,
+                        config) -> ParticleState:
+  """A fast SMC loop for evaluation or use inside other algorithms."""
+  key, subkey = jax.random.split(key)
+
+  samples = initial_sampler(subkey, config.batch_size, config.sample_shape)
+  log_weights = -jnp.log(config.batch_size) * jnp.ones(config.batch_size)
+  short_inner_loop = get_short_inner_loop(markov_kernel_by_step,
+                                          density_by_step, config)
+
+  keys = jax.random.split(key, config.num_temps-1)
+
+  def scan_step(passed_state, per_step_input):
+    samples, log_weights = passed_state
+    current_step, current_key = per_step_input
+    new_samples, new_log_weights, log_z_increment, _ = short_inner_loop(
+        current_key, samples, log_weights, current_step)
+    new_passed_state = (new_samples, new_log_weights)
+    return new_passed_state, log_z_increment
+
+  init_state = (samples, log_weights)
+  per_step_inputs = (np.arange(1, config.num_temps), keys)
+  final_state, log_normalizer_increments = jax.lax.scan(scan_step,
+                                                        init_state,
+                                                        per_step_inputs
+                                                        )
+  log_normalizer_estimate = jnp.sum(log_normalizer_increments)
+  particle_state = ParticleState(
+      samples=final_state[0],
+      log_weights=final_state[1],
+      log_normalizer_estimate=log_normalizer_estimate)
+  return particle_state
+
+
 def outer_loop_smc(initial_log_density: LogDensityNoStep,
                    final_log_density: LogDensityNoStep,
                    initial_sampler: InitialSampler,
@@ -100,6 +156,7 @@ def outer_loop_smc(initial_log_density: LogDensityNoStep,
     initial_sampler: A function that produces the initial samples.
     key: A Jax random key.
     config: A ConfigDict containing the configuration.
+
   Returns:
     An AlgoResults tuple containing a summary of the results.
   """
@@ -114,19 +171,9 @@ def outer_loop_smc(initial_log_density: LogDensityNoStep,
   samples = initial_sampler(subkey, config.batch_size, config.sample_shape)
   log_weights = -jnp.log(config.batch_size) * jnp.ones(config.batch_size)
 
-  def short_inner_loop(rng_key: RandomKey,
-                       loc_samples: Array,
-                       loc_log_weights: Array,
-                       loc_step: int):
-    return inner_loop(rng_key,
-                      markov_kernel_by_step,
-                      loc_samples,
-                      loc_log_weights,
-                      density_by_step,
-                      loc_step,
-                      config)
   logging.info('Jitting step...')
-  inner_loop_jit = jax.jit(short_inner_loop)
+  inner_loop_jit = jax.jit(
+      get_short_inner_loop(markov_kernel_by_step, density_by_step, config))
 
   logging.info('Performing initial step redundantly for accurate timing...')
   initial_start_time = time.time()
@@ -143,13 +190,13 @@ def outer_loop_smc(initial_log_density: LogDensityNoStep,
         subkey, samples, log_weights, step)
     acceptance_nuts = float(np.asarray(acceptance[0]))
     acceptance_hmc = float(np.asarray(acceptance[1]))
+    acceptance_rwm = float(np.asarray(acceptance[2]))
     log_normalizer_estimate += log_normalizer_increment
     if step % config.report_step == 0:
       beta = density_by_step.get_beta(step)
       logging.info(
-          'Step %05d: beta %f Acceptance rate NUTS %f Acceptance rate HMC %f',
-          step, beta, acceptance_nuts, acceptance_hmc
-          )
+          'Step %05d: beta %f Acceptance rate NUTS %f Acceptance rate HMC %f Acceptance rate RWM %f',
+          step, beta, acceptance_nuts, acceptance_hmc, acceptance_rwm)
 
   finish_time = time.time()
   delta_time = finish_time - start_time

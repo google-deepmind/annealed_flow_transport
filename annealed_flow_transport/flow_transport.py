@@ -98,6 +98,30 @@ def get_delta(samples: Array,
   return deltas
 
 
+def get_batch_parallel_free_energy_increment(samples: Array,
+                                             flow_apply: FlowApply,
+                                             flow_params: FlowParams,
+                                             log_density: LogDensityByStep,
+                                             step: int) -> Array:
+  """Get the log normalizer increments in case where there is no resampling.
+
+  Args:
+    samples: (num_batch, num_dim)
+    flow_apply: Apply the flow.
+    flow_params: Parameters of the flow.
+    log_density: Value of the log density.
+    step: Step of the algorithm.
+
+  Returns:
+    Scalar array containing the increments.
+  """
+  deltas = get_delta(samples, flow_apply, flow_params, log_density, step)
+  chex.assert_rank(deltas, 1)
+  # The mean takes the average over the batch. This is equivalent to delaying
+  # the average until all temperatures have been accumulated.
+  return jnp.mean(deltas)
+
+
 def transport_free_energy_estimator(samples: Array,
                                     log_weights: Array,
                                     flow_apply: FlowApply,
@@ -198,34 +222,31 @@ def reweight(log_weights_old: Array,
   return log_weights_new
 
 
-def update_samples_log_weights(flow_apply: FlowApply,
-                               markov_kernel_apply: MarkovKernelApply,
-                               flow_params: FlowParams,
-                               samples: Array,
-                               log_weights: Array,
-                               key: RandomKey,
-                               log_density: LogDensityByStep,
-                               step: int,
-                               config) -> Tuple[Array, Array, AcceptanceTuple]:
+def update_samples_log_weights(
+    flow_apply: FlowApply, markov_kernel_apply: MarkovKernelApply,
+    flow_params: FlowParams, samples: Array, log_weights: Array, key: RandomKey,
+    log_density: LogDensityByStep, step: int, use_resampling: bool,
+    use_markov: bool,
+    resample_threshold: float) -> Tuple[Array, Array, AcceptanceTuple]:
   """Update samples and log weights once the flow has been learnt."""
   transformed_samples, _ = flow_apply(flow_params, samples)
   assert_equal_shape([transformed_samples, samples])
   log_weights_new = reweight(log_weights, samples, flow_apply, flow_params,
                              log_density, step)
   assert_equal_shape([log_weights_new, log_weights])
-  if config.use_resampling:
+  if use_resampling:
     subkey, key = jax.random.split(key)
     resampled_samples, log_weights_resampled = resampling.optionally_resample(
-        subkey, log_weights_new, transformed_samples, config.resample_threshold)
+        subkey, log_weights_new, transformed_samples, resample_threshold)
     assert_equal_shape([resampled_samples, transformed_samples])
     assert_equal_shape([log_weights_resampled, log_weights_new])
   else:
     resampled_samples = transformed_samples
     log_weights_resampled = log_weights_new
-  if config.use_markov:
+  if use_markov:
     markov_samples, acceptance_tuple = markov_kernel_apply(
         step, key, resampled_samples)
   else:
     markov_samples = resampled_samples
-    acceptance_tuple = (1., 1.)
+    acceptance_tuple = (1., 1., 1.)
   return markov_samples, log_weights_resampled, acceptance_tuple

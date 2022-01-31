@@ -13,21 +13,24 @@
 # limitations under the License.
 
 """Shared custom defined types used in more than one source file."""
-from typing import Any, Callable, NamedTuple, Tuple
+from typing import Any, Callable, Mapping, NamedTuple, Tuple
 
 import jax.numpy as jnp
 import ml_collections
+import numpy as np
 import optax
+
+VaeBatch = Mapping[str, np.ndarray]
 
 ConfigDict = ml_collections.ConfigDict
 Array = jnp.ndarray
 LogDensityByStep = Callable[[int, Array], Array]
 RandomKey = Array
-AcceptanceTuple = Tuple[Array, Array]
+AcceptanceTuple = Tuple[Array, Array, Array]
 MarkovKernelApply = Callable[[int, RandomKey, Array], Tuple[Array,
                                                             AcceptanceTuple]]
 OptState = optax.OptState
-UpdateFn = optax.GradientTransformation
+UpdateFn = optax.TransformUpdateFn
 FlowParams = Any
 FlowApply = Callable[[FlowParams, Array], Tuple[Array, Array]]
 LogDensityNoStep = Callable[[Array], Array]
@@ -35,6 +38,7 @@ InitialSampler = Callable[[RandomKey, int, Tuple[int]], Array]
 FreeEnergyAndGrad = Callable[[FlowParams, Array, Array, int], Tuple[Array,
                                                                     Array]]
 FreeEnergyEval = Callable[[FlowParams, Array, Array, int], Array]
+MNIST_IMAGE_SHAPE = (28, 28, 1)
 
 
 class SamplesTuple(NamedTuple):
@@ -60,3 +64,20 @@ class AlgoResultsTuple(NamedTuple):
   log_normalizer_estimate: Array
   delta_time: float
   initial_time_diff: float
+
+
+class ParticleState(NamedTuple):
+  samples: Array
+  log_weights: Array
+  log_normalizer_estimate: Array
+
+
+class VAEResult(NamedTuple):
+  sample_image: jnp.ndarray
+  reconst_sample: jnp.ndarray
+  latent_mean: jnp.ndarray
+  latent_std: jnp.ndarray
+  logits: jnp.ndarray
+
+
+ParticlePropose = Callable[[RandomKey], ParticleState]

@@ -24,12 +24,16 @@ from annealed_flow_transport.densities import ChallengingTwoDimensionalMixture
 from annealed_flow_transport.densities import FunnelDistribution
 from annealed_flow_transport.densities import MultivariateNormalDistribution
 from annealed_flow_transport.densities import NormalDistribution
+from annealed_flow_transport.densities import phi_four_log_density
+from annealed_flow_transport.densities import PhiFourTheory
 
 import jax
 import jax.numpy as jnp
 from jax.scipy.stats import norm
 
 import ml_collections
+import numpy as np
+
 ConfigDict = ml_collections.ConfigDict
 
 join = os.path.join
@@ -127,6 +131,63 @@ class VAETest(parameterized.TestCase):
       current_log_density = vae_density.total_log_probability(
           test_input[batch_index, :])
       _assert_equal_vec(self, test_output[batch_index], current_log_density)
+
+
+class PhiFourTest(parameterized.TestCase):
+
+  def test_batched_configurable(self):
+    config = ConfigDict()
+    config.mass_squared = -4.
+    config.bare_coupling = 5.1
+    batch_size = 7
+    num_dim = 16
+    trial_values = jnp.linspace(-2., 2., batch_size * num_dim).reshape(
+        (batch_size, num_dim))
+    log_density = PhiFourTheory(config, num_dim)
+    log_density_val = log_density(trial_values)
+    self.assertTrue(log_density_val.shape, (batch_size))
+
+  def test_zero(self):
+    lattice_shape = (8, 6)
+    trial_lattice_values = jnp.zeros(lattice_shape)
+    mass_squared = -4.
+    bare_coupling = 5.1
+    trial_log_density = phi_four_log_density(trial_lattice_values,
+                                             mass_squared,
+                                             bare_coupling)
+    _assert_equal_vec(self, trial_log_density, 0.)
+
+  def test_reflection_symmetry(self):
+    lattice_shape = (8, 6)
+    lattice_size = np.prod(lattice_shape)
+    trial_lattice_values = jnp.linspace(-2., 2.,
+                                        lattice_size).reshape(lattice_shape)
+    reflected_trial_lattice_values = -1.*trial_lattice_values
+    mass_squared = -4.
+    bare_coupling = 5.1
+    trial_log_density = phi_four_log_density(trial_lattice_values,
+                                             mass_squared,
+                                             bare_coupling)
+    reflected_trial_log_density = phi_four_log_density(
+        reflected_trial_lattice_values, mass_squared, bare_coupling)
+    _assert_equal_vec(self, trial_log_density, reflected_trial_log_density)
+
+  def test_translation_symmetry(self):
+    lattice_shape = (8, 6)
+    lattice_size = np.prod(lattice_shape)
+    trial_lattice_values = jnp.linspace(-2., 2.,
+                                        lattice_size).reshape(lattice_shape)
+    translated_lattice_values = jnp.roll(trial_lattice_values, shift=(1, 2),
+                                         axis=(0, 1))
+    mass_squared = -4.
+    bare_coupling = 5.1
+    trial_log_density = phi_four_log_density(trial_lattice_values,
+                                             mass_squared,
+                                             bare_coupling)
+    translated_log_density = phi_four_log_density(translated_lattice_values,
+                                                  mass_squared,
+                                                  bare_coupling)
+    _assert_equal_vec(self, trial_log_density, translated_log_density)
 
 if __name__ == '__main__':
   absltest.main()

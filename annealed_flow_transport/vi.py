@@ -40,6 +40,7 @@ InitialSampler = tp.InitialSampler
 RandomKey = tp.RandomKey
 assert_equal_shape = chex.assert_equal_shape
 AlgoResultsTuple = tp.AlgoResultsTuple
+ParticleState = tp.ParticleState
 
 
 def vfe_naive_importance(initial_sampler: InitialSampler,
@@ -48,7 +49,7 @@ def vfe_naive_importance(initial_sampler: InitialSampler,
                          flow_apply: FlowApply,
                          flow_params: FlowParams,
                          key: RandomKey,
-                         config):
+                         config) -> ParticleState:
   """Estimate log normalizing constant using naive importance sampling."""
   samples = initial_sampler(key,
                             config.batch_size,
@@ -59,9 +60,14 @@ def vfe_naive_importance(initial_sampler: InitialSampler,
   log_density_initial = initial_density(samples)
   assert_equal_shape([log_density_initial, log_density_target])
   log_density_approx = log_density_initial - log_det_jacs
-  deltas = log_density_target - log_density_approx
-  log_normalizer_estimate = logsumexp(deltas) - np.log(config.batch_size)
-  return log_normalizer_estimate
+  log_importance_weights = log_density_target - log_density_approx
+  log_normalizer_estimate = logsumexp(log_importance_weights) - np.log(
+      config.batch_size)
+  particle_state = ParticleState(
+      samples=transformed_samples,
+      log_weights=log_importance_weights,
+      log_normalizer_estimate=log_normalizer_estimate)
+  return particle_state
 
 
 def vi_free_energy(flow_params: FlowParams,
@@ -95,7 +101,8 @@ def outer_loop_vi(initial_sampler: InitialSampler,
                   key: RandomKey,
                   initial_log_density: LogDensityNoStep,
                   final_log_density: LogDensityNoStep,
-                  config) -> AlgoResultsTuple:
+                  config,
+                  save_checkpoint) -> AlgoResultsTuple:
   """The training loop for variational inference with normalizing flows.
 
   Args:
@@ -108,6 +115,7 @@ def outer_loop_vi(initial_sampler: InitialSampler,
     initial_log_density: Function that evaluates the base density.
     final_log_density: Function that evaluates the target density.
     config: configuration ConfigDict.
+    save_checkpoint: None or function that takes params and saves them.
   Returns:
     An AlgoResults tuple containing a summary of the results.
   """
@@ -149,27 +157,26 @@ def outer_loop_vi(initial_sampler: InitialSampler,
         log_normalizer_estimate = -1.*curr_free_energy
       elif config.vi_estimator == 'importance':
         subkey, key = jax.random.split(key, 2)
-        log_normalizer_estimate = vfe_naive_importance(initial_sampler,
-                                                       initial_log_density,
-                                                       final_log_density,
-                                                       flow_apply, flow_params,
-                                                       subkey, config)
+        particle_state = vfe_naive_importance(
+            initial_sampler, initial_log_density, final_log_density, flow_apply,
+            flow_params, subkey, config)
+        log_normalizer_estimate = particle_state.log_normalizer_estimate
       else:
         raise NotImplementedError
       logging.info('Log normalizer estimate %f:', log_normalizer_estimate)
 
     step += 1
 
-  base_samples = initial_sampler(key,
-                                 config.batch_size,
-                                 config.sample_shape)
-  transformed_samples, unused_ldj, = flow_apply(flow_params, base_samples)
+  if save_checkpoint:
+    save_checkpoint(flow_params)
 
-  log_weights = -np.ones(config.batch_size) * np.log(config.batch_size)
+  particle_state = vfe_naive_importance(initial_sampler, initial_log_density,
+                                        final_log_density, flow_apply,
+                                        flow_params, key, config)
   results = AlgoResultsTuple(
-      test_samples=transformed_samples,
-      test_log_weights=log_weights,
-      log_normalizer_estimate=log_normalizer_estimate,
+      test_samples=particle_state.samples,
+      test_log_weights=particle_state.log_weights,
+      log_normalizer_estimate=particle_state.log_normalizer_estimate,
       delta_time=0.,  # These are currently set with placeholders.
       initial_time_diff=0.)
   return results

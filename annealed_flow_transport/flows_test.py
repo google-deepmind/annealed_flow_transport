@@ -331,5 +331,130 @@ class ComposedFlowsTest(parameterized.TestCase):
     test_log_det_jac = curry_jac(x)
     _assert_equal_vec(self, target_log_det_jac, test_log_det_jac, atol=1e-6)
 
+
+class CheckerBoardMaskTest(parameterized.TestCase):
+
+  def test_checkerboard(self):
+    target_a = jnp.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
+    target_b = jnp.array([[1, 0, 1], [0, 1, 0]])
+    test_a = flows.get_checkerboard_mask((3, 3), 0)
+    test_b = flows.get_checkerboard_mask((2, 3), 1)
+    _assert_equal_vec(self, target_a, test_a)
+    _assert_equal_vec(self, target_b, test_b)
+
+
+class TestFullyConvolutionalNetwork(parameterized.TestCase):
+
+  def test_net(self):
+    num_middle_channels = 3
+    num_middle_layers = 2
+    num_final_channels = 2
+    image_shape = (7, 9)
+    kernel_shape = (4, 3)
+    def forward(x):
+      net = flows.FullyConvolutionalNetwork(
+          num_middle_channels=num_middle_channels,
+          num_middle_layers=num_middle_layers,
+          num_final_channels=num_final_channels,
+          kernel_shape=kernel_shape,
+          zero_final=True)
+      return net(x)
+    forward_fn = hk.without_apply_rng(hk.transform(forward))
+    key = jax.random.PRNGKey(1)
+    subkey, key = jax.random.split(key)
+    random_input = jax.random.normal(subkey, image_shape)
+    params = forward_fn.init(key, random_input)
+    output = forward_fn.apply(params, random_input)
+    self.assertEqual(output.shape, image_shape+(2,))
+    _assert_equal_vec(self, output, jnp.zeros_like(output))
+
+  def test_translation_symmetry(self):
+    num_middle_channels = 3
+    num_middle_layers = 2
+    num_final_channels = 2
+    image_shape = (7, 9)
+    kernel_shape = (3, 3)
+    def forward(x):
+      net = flows.FullyConvolutionalNetwork(
+          num_middle_channels=num_middle_channels,
+          num_middle_layers=num_middle_layers,
+          num_final_channels=num_final_channels,
+          kernel_shape=kernel_shape,
+          zero_final=False,
+          is_torus=True)
+      return net(x)
+    forward_fn = hk.without_apply_rng(hk.transform(forward))
+    key = jax.random.PRNGKey(1)
+    subkey, key = jax.random.split(key)
+    random_input = jax.random.normal(subkey, image_shape)
+    params = forward_fn.init(key, random_input)
+    output = forward_fn.apply(params, random_input)
+    def roll_array(array_in):
+      return jnp.roll(array_in,
+                      shift=(2, 2),
+                      axis=(0, 1))
+    translated_output = forward_fn.apply(params,
+                                         roll_array(random_input))
+    _assert_equal_vec(self,
+                      translated_output,
+                      roll_array(output))
+
+
+class TestConvAffineCoupling(parameterized.TestCase):
+
+  def test_identity_init(self):
+    image_shape = (3, 3)
+    kernel_shape = (2, 2)
+    num_middle_channels = 3
+    num_middle_layers = 3
+    mask = jnp.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
+    def forward(x):
+      flow = flows.ConvAffineCoupling(
+          mask=mask,
+          conv_num_middle_channels=num_middle_channels,
+          conv_num_middle_layers=num_middle_layers,
+          conv_kernel_shape=kernel_shape,
+          identity_init=True)
+      return flow(x)
+    forward_fn = hk.without_apply_rng(hk.transform(forward))
+    key = jax.random.PRNGKey(1)
+    subkey, key = jax.random.split(key)
+    random_input = jax.random.normal(subkey, shape=image_shape)
+    params = forward_fn.init(key, random_input)
+    output, log_det_jac = forward_fn.apply(params, random_input)
+    _assert_equal_vec(self, output, random_input)
+    _assert_equal_vec(self, log_det_jac, 0.)
+
+  def test_jacobian(self):
+    num_middle_channels = 3
+    num_middle_layers = 5
+    image_shape = (3, 2)
+    kernel_shape = (3, 3)
+    mask = jnp.array([[1, 1], [1, 0], [0, 0]])
+    def forward(x):
+      flow = flows.ConvAffineCoupling(
+          mask=mask,
+          conv_num_middle_channels=num_middle_channels,
+          conv_num_middle_layers=num_middle_layers,
+          conv_kernel_shape=kernel_shape,
+          identity_init=False)
+      return flow(x)
+    forward_fn = hk.without_apply_rng(hk.transform(forward))
+    key = jax.random.PRNGKey(2)
+    subkey, key = jax.random.split(key)
+    random_input = jax.random.normal(subkey, shape=image_shape)
+    params = forward_fn.init(key, random_input)
+    apply = jax.jit(forward_fn.apply)
+    curry_val = lambda x: apply(params, x)[0].reshape((6,))
+    curry_jac = lambda x: apply(params, x)[1]
+    jac_func = jax.jit(jax.jacobian(curry_val))
+    jac = jac_func(random_input).reshape((6, 6))
+    print('NVP Jacobian  \n', jac)
+    target_log_det_jac = jnp.sum(jnp.log(jnp.abs(jnp.diag(jac))))
+    test_log_det_jac = curry_jac(random_input)
+    _assert_equal_vec(self, target_log_det_jac, test_log_det_jac)
+    upper_triangle = jnp.triu(jac, k=1)
+    _assert_equal_vec(self, upper_triangle, jnp.zeros_like(upper_triangle))
+
 if __name__ == '__main__':
   absltest.main()
