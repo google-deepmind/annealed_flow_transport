@@ -26,24 +26,28 @@ def get_config():
 
   config.seed = 1
   config.batch_size = 2000
+  config.craft_batch_size = 2000
   config.estimation_batch_size = 2000
   config.sample_shape = (num_dim,)
   config.report_step = 1
   config.vi_report_step = 50
-  config.num_temps = 4
+  config.num_temps = 5
   config.step_logging = False
   config.resample_threshold = 0.3
   config.stopping_criterion = 'time'
   config.use_resampling = True
   config.use_markov = True
-  config.algo = 'aft'
+  config.use_path_gradient = False
+  config.algo = 'craft'
   config.vi_iters = 1000
+  config.craft_num_iters = 1000
   config.vi_estimator = 'importance'
 
   optimization_config = ConfigDict()
   optimization_config.free_energy_iters = 1000
   optimization_config.aft_step_size = 1e-3
   optimization_config.vi_step_size = 1e-3
+  optimization_config.craft_step_size = 1e-2
 
   config.optimization_config = optimization_config
 
@@ -83,6 +87,7 @@ def get_config():
   nuts_step_config.step_sizes = [2.0, 2.0, 2.0, 2.0]
   mcmc_config.hmc_steps_per_iter = 10
   mcmc_config.hmc_num_leapfrog_steps = 10
+  mcmc_config.rwm_steps_per_iter = 0
 
   mcmc_config.slice_steps_per_iter = 0
   mcmc_config.nuts_steps_per_iter = 0

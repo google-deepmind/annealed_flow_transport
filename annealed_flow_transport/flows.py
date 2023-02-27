@@ -34,6 +34,7 @@ import jax.numpy as jnp
 import numpy as np
 
 Array = tp.Array
+Samples = tp.Samples
 ConfigDict = tp.ConfigDict
 
 
@@ -48,14 +49,15 @@ class ConfigurableFlow(hk.Module, abc.ABC):
     self._check_configuration(config)
     self._config = config
 
-  def _check_input(self, x: Array) -> Array:
-    chex.assert_rank(x, 1)
+  def _check_input(self, x: Samples):
+    chex.assert_rank(x, 2)
 
-  def _check_outputs(self, x: Array, transformed_x: Array,
-                     log_abs_det_jac: Array) -> Array:
-    chex.assert_rank(x, 1)
+  def _check_outputs(self, x: Samples, transformed_x: Samples,
+                     log_abs_det_jac: Array):
+    chex.assert_rank(x, 2)
     chex.assert_equal_shape([x, transformed_x])
-    chex.assert_shape(log_abs_det_jac, ())
+    num_batch = x.shape[0]
+    chex.assert_shape(log_abs_det_jac, (num_batch,))
 
   def _check_members_types(self, config: ConfigDict, expected_members_types):
     for elem, elem_type in expected_members_types:
@@ -65,19 +67,37 @@ class ConfigurableFlow(hk.Module, abc.ABC):
         msg = 'Flow config element '+elem+' is not of type '+str(elem_type)
         raise TypeError(msg)
 
-  def __call__(self, x: Array) -> Tuple[Array, Array]:
+  def __call__(self, x: Samples) -> Tuple[Samples, Array]:
     """Call transform_and_log abs_det_jac with automatic shape checking.
 
     This calls transform_and_log_abs_det_jac which needs to be implemented
     in derived classes.
 
     Args:
-      x: Array size (num_dim,) containing input to flow.
+      x: input samples to flow.
     Returns:
-      Array size (num_dim,) containing output and Scalar log abs det Jacobian.
+      output samples and (num_batch,) log abs det Jacobian.
     """
     self._check_input(x)
-    output, log_abs_det_jac = self.transform_and_log_abs_det_jac(x)
+    vmapped = hk.vmap(self.transform_and_log_abs_det_jac, split_rng=False)
+    output, log_abs_det_jac = vmapped(x)
+    self._check_outputs(x, output, log_abs_det_jac)
+    return output, log_abs_det_jac
+
+  def inverse(self, x: Samples) -> Tuple[Samples, Array]:
+    """Call transform_and_log abs_det_jac with automatic shape checking.
+
+    This calls transform_and_log_abs_det_jac which needs to be implemented
+    in derived classes.
+
+    Args:
+      x: input to flow
+    Returns:
+      output and (num_batch,) log abs det Jacobian.
+    """
+    self._check_input(x)
+    vmapped = hk.vmap(self.inv_transform_and_log_abs_det_jac, split_rng=False)
+    output, log_abs_det_jac = vmapped(x)
     self._check_outputs(x, output, log_abs_det_jac)
     return output, log_abs_det_jac
 
@@ -90,6 +110,16 @@ class ConfigurableFlow(hk.Module, abc.ABC):
     Returns:
       Array size (num_dim,) containing output and Scalar log abs det Jacobian.
     """
+
+  def inv_transform_and_log_abs_det_jac(self, x: Array) -> Tuple[Array, Array]:
+    """Transform x through inverse and compute log abs determinant of Jacobian.
+
+    Args:
+      x: (num_dim,) input to the flow.
+    Returns:
+      Array size (num_dim,) containing output and Scalar log abs det Jacobian.
+    """
+    raise NotImplementedError
 
   @abc.abstractmethod
   def _check_configuration(self, config: ConfigDict):
@@ -105,23 +135,33 @@ class ConfigurableFlow(hk.Module, abc.ABC):
 class DiagonalAffine(ConfigurableFlow):
   """An affine transformation with a positive diagonal matrix."""
 
+  def __init__(self, config: ConfigDict):
+    super().__init__(config)
+    num_elem = config.sample_shape[0]
+    unconst_diag_init = hk.initializers.Constant(jnp.zeros((num_elem,)))
+    bias_init = hk.initializers.Constant(jnp.zeros((num_elem,)))
+    self._unconst_diag = hk.get_parameter(
+        'unconst_diag',
+        shape=[num_elem],
+        dtype=jnp.float32,  # TODO(alexmatthews) nicer way to infer dtype
+        init=unconst_diag_init)
+    self._bias = hk.get_parameter(
+        'bias',
+        shape=[num_elem],
+        dtype=jnp.float32,  # TODO(alexmatthews) nicer way to infer dtype
+        init=bias_init)
+
   def _check_configuration(self, unused_config: ConfigDict):
     pass
 
   def transform_and_log_abs_det_jac(self, x: Array) -> Tuple[Array, Array]:
-    num_elem = x.shape[0]
-    unconst_diag_init = hk.initializers.Constant(jnp.zeros((num_elem,)))
-    bias_init = hk.initializers.Constant(jnp.zeros((num_elem,)))
-    unconst_diag = hk.get_parameter('unconst_diag',
-                                    shape=[num_elem],
-                                    dtype=x.dtype,
-                                    init=unconst_diag_init)
-    bias = hk.get_parameter('bias',
-                            shape=[num_elem],
-                            dtype=x.dtype,
-                            init=bias_init)
-    output = jnp.exp(unconst_diag)*x + bias
-    log_abs_det = jnp.sum(unconst_diag)
+    output = jnp.exp(self._unconst_diag)*x + self._bias
+    log_abs_det = jnp.sum(self._unconst_diag)
+    return output, log_abs_det
+
+  def inv_transform_and_log_abs_det_jac(self, x: Array) -> Tuple[Array, Array]:
+    output = jnp.exp(-self._unconst_diag)*(x - self._bias)
+    log_abs_det = -1.*jnp.sum(self._unconst_diag)
     return output, log_abs_det
 
 
@@ -372,8 +412,9 @@ class SplineInverseAutoregressiveFlow(ConfigurableFlow):
 
   def _transform_raw_to_spline_params(
       self, raw_param_vec: Array) -> Tuple[Array, Array, Array]:
-    unconst_bin_size_x, unconst_bin_size_y, unconst_derivs = self._unpack_spline_params(
-        raw_param_vec)
+    unconst_bin_size_x, unconst_bin_size_y, unconst_derivs = (
+        self._unpack_spline_params(raw_param_vec)
+    )
 
     def normalize_bin_sizes(unconst_bin_sizes: Array) -> Array:
       bin_range = self._upper_lim - self._lower_lim
@@ -479,6 +520,28 @@ def affine_transformation(params: Array,
   scale = params[1] + 1.
   output = x * scale + shift
   return output, jnp.log(jnp.abs(scale))
+
+
+def inverse_affine_transformation(params: Array,
+                                  y: Array) -> Tuple[Array, Array]:
+  shift = params[0]
+  # Assuming params start as zero adding 1 to scale gives identity transform.
+  scale = params[1] + 1.
+  output = (y - shift) / scale
+  return output, -1.*jnp.log(jnp.abs(scale))
+
+
+class AffineTransformer:
+
+  def __call__(self, params: Array, x: Array) -> Tuple[Array, Array]:
+    vectorized_affine = jnp.vectorize(affine_transformation,
+                                      signature='(k),()->(),()')
+    return vectorized_affine(params, x)
+
+  def inverse(self, params: Array, y: Array) -> Tuple[Array, Array]:
+    vectorized_affine = jnp.vectorize(inverse_affine_transformation,
+                                      signature='(k),()->(),()')
+    return vectorized_affine(params, y)
 
 
 class RationalQuadraticSpline(ConfigurableFlow):
@@ -727,7 +790,7 @@ class CouplingLayer(object):
   """
 
   def __init__(self, conditioner_network: Callable[[Array], Array], mask: Array,
-               transformer: Callable[[Array, Array], Tuple[Array, Array]]):
+               transformer):
     self._conditioner_network = conditioner_network
     self._mask = mask
     self._transformer = transformer
@@ -754,6 +817,29 @@ class CouplingLayer(object):
     log_abs_det = jnp.sum(log_abs_dets * mask_complement)
     return output_x, log_abs_det
 
+  def inverse(self, y):
+    """Transform y with inverse coupling layer.
+
+    Args:
+      y: event_shape Array.
+    Returns:
+      output_y: event_shape Array corresponding to the output.
+      log_abs_det: scalar corresponding to the log abs det Jacobian.
+    """
+    mask_complement = 1. - self._mask
+    masked_y = y * self._mask
+    chex.assert_equal_shape([masked_y, y])
+    transformer_params = self._conditioner_network(masked_y)
+    transformed_y, log_abs_dets = self._transformer.inverse(transformer_params,
+                                                            y)
+    output_y = masked_y + mask_complement * transformed_y
+    chex.assert_equal_shape([transformed_y,
+                             output_y,
+                             y,
+                             log_abs_dets])
+    log_abs_det = jnp.sum(log_abs_dets * mask_complement)
+    return output_y, log_abs_det
+
 
 class ConvAffineCoupling(CouplingLayer):
   """A convolutional affine coupling layer."""
@@ -772,8 +858,7 @@ class ConvAffineCoupling(CouplingLayer):
         kernel_shape=conv_kernel_shape,
         zero_final=identity_init,
         is_torus=is_torus)
-    vectorized_affine = jnp.vectorize(affine_transformation,
-                                      signature='(k),()->(),()')
+    vectorized_affine = AffineTransformer()
 
     super().__init__(conv_net,
                      mask,
@@ -837,32 +922,39 @@ class ConvAffineCouplingStack(ConfigurableFlow):
     restored_x = jnp.reshape(transformed_x, x.shape)
     return restored_x, log_abs_det
 
+  def inv_transform_and_log_abs_det_jac(self, x: Array) -> tuple[Array, Array]:
+    reshaped_x = jnp.reshape(x, self._true_shape)
+    transformed_x = reshaped_x
+    log_abs_det = 0.
+    for index in range(self._config.num_coupling_layers-1, -1, -1):
+      coupling_layer = self._coupling_layers[index]
+      transformed_x, log_det_increment = coupling_layer.inverse(transformed_x)
+      chex.assert_equal_shape([transformed_x, reshaped_x])
+      log_abs_det += log_det_increment
+    restored_x = jnp.reshape(transformed_x, x.shape)
+    return restored_x, log_abs_det
 
-class ComposedFlows(ConfigurableFlow):
+
+class ComposedFlows():
   """Class to compose flows based on a list of configs.
 
   config should contain flow_configs a list of flow configs to compose.
   """
 
   def __init__(self, config: ConfigDict):
-    super().__init__(config)
+    self._config = config
     self._flows = []
     for flow_config in self._config.flow_configs:
       base_flow_class = globals()[flow_config.type]
       flow = base_flow_class(flow_config)
       self._flows.append(flow)
 
-  def _check_configuration(self, config: ConfigDict):
-    expected_members_types = [
-        ('flow_configs', list),
-    ]
-
-    self._check_members_types(config, expected_members_types)
-
-  def transform_and_log_abs_det_jac(self, x: Array) -> Tuple[Array, Array]:
-    log_abs_det = 0.
+  def __call__(self, x: Samples) -> Tuple[Samples, Array]:
+    log_abs_det = jnp.zeros(x.shape[0])
     progress = x
     for flow in self._flows:
       progress, log_abs_det_increment = flow(progress)
       log_abs_det += log_abs_det_increment
+    chex.assert_equal_shape((x, progress))
+    chex.assert_shape(log_abs_det, (x.shape[0],))
     return progress, log_abs_det

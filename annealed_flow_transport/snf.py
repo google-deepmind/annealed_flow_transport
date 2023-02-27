@@ -26,14 +26,13 @@ import time
 
 from absl import logging
 from annealed_flow_transport import flow_transport
-from annealed_flow_transport import markov_kernel
 import annealed_flow_transport.aft_types as tp
 import jax
 import jax.numpy as jnp
 import optax
 
 
-Array = jnp.ndarray
+Array = tp.Array
 OptState = tp.OptState
 UpdateFn = tp.UpdateFn
 FlowParams = tp.FlowParams
@@ -110,8 +109,8 @@ def inner_loop_snf(key: RandomKey,
 
 def outer_loop_snf(flow_init_params: FlowParams,
                    flow_apply: FlowApply,
-                   initial_log_density: LogDensityNoStep,
-                   final_log_density: LogDensityNoStep,
+                   density_by_step: LogDensityByStep,
+                   markov_kernel_by_step: MarkovKernelApply,
                    initial_sampler: InitialSampler,
                    key: RandomKey,
                    opt,
@@ -123,8 +122,8 @@ def outer_loop_snf(flow_init_params: FlowParams,
   Args:
     flow_init_params: initial state of the flow.
     flow_apply: function that applies the flow.
-    initial_log_density: The log density of the starting distribution.
-    final_log_density: The log density of the target distribution.
+    density_by_step: The log density for different annealing temperatures.
+    markov_kernel_by_step: Markov kernel for different annealing temperatures.
     initial_sampler: A function that produces the initial samples.
     key: A Jax random key.
     opt: An Optax optimizer.
@@ -135,10 +134,6 @@ def outer_loop_snf(flow_init_params: FlowParams,
     An AlgoResults tuple containing a summary of the results.
   """
   num_temps = config.num_temps
-  density_by_step = flow_transport.GeometricAnnealingSchedule(
-      initial_log_density, final_log_density, num_temps)
-  markov_kernel_by_step = markov_kernel.MarkovTransitionKernel(
-      config.mcmc_config, density_by_step, num_temps)
 
   def short_inner_loop(curr_transition_params,
                        rng_key: RandomKey):

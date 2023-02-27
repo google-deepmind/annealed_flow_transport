@@ -33,37 +33,42 @@ import tensorflow_datasets as tfds
 
 # TypeDefs
 NpArray = np.ndarray
-Array = jnp.ndarray
+Array = tp.Array
 ConfigDict = tp.ConfigDict
+Samples = tp.Samples
+SampleShape = tp.SampleShape
+
+assert_trees_all_equal = chex.assert_trees_all_equal
 
 
 class LogDensity(metaclass=abc.ABCMeta):
   """Abstract base class from which all log densities should inherit."""
 
-  def __init__(self, config: ConfigDict, num_dim: int):
-    self._check_constructor_inputs(config, num_dim)
+  def __init__(self, config: ConfigDict, sample_shape: SampleShape):
+    self._check_constructor_inputs(config, sample_shape)
     self._config = config
-    self._num_dim = num_dim
+    self._sample_shape = sample_shape
 
   @abc.abstractmethod
-  def _check_constructor_inputs(self, config: ConfigDict, num_dim: int):
-    """Check the config and number of dimensions of the class.
+  def _check_constructor_inputs(self, config: ConfigDict,
+                                sample_shape: SampleShape):
+    """Check the config and sample shape of the class.
 
     Will typically raise Assertion like errors.
 
     Args:
       config: Configuration for the log density.
-      num_dim: Number of dimensions expected for the density.
+      sample_shape: Shape expected for the density.
     """
 
-  def __call__(self, x: Array) -> Array:
+  def __call__(self, x: Samples) -> Array:
     """Evaluate the log density with automatic shape checking.
 
     This calls evaluate_log_density which needs to be implemented
     in derived classes.
 
     Args:
-      x: Array of shape (num_batch, num_dim) containing input points.
+      x: input Samples.
     Returns:
       Array of shape (num_batch,) with corresponding log densities.
     """
@@ -73,21 +78,30 @@ class LogDensity(metaclass=abc.ABCMeta):
     return output
 
   @abc.abstractmethod
-  def evaluate_log_density(self, x: Array) -> Array:
+  def evaluate_log_density(self, x: Samples) -> Array:
     """Evaluate the log density.
 
     Args:
-      x: Array of shape (num_batch, num_dim) containing input to log density
+      x: Samples.
     Returns:
       Array of shape (num_batch,) containing values of log densities.
     """
 
-  def _check_input_shape(self, vector_in: Array):
-    chex.assert_shape(vector_in, (None, self._num_dim))
+  def _check_input_shape(self, x_in: Samples):
+    should_be_tree_shape = jax.tree_map(lambda x: x.shape[1:], x_in)
+    chex.assert_trees_all_equal(self._sample_shape, should_be_tree_shape)
+    def get_first_leaf(tree):
+      return jax.tree_util.tree_leaves(tree)[0]
+    first_batch_size = np.shape(get_first_leaf(x_in))[0]
+    chex.assert_tree_shape_prefix(x_in, (first_batch_size,))
 
-  def _check_output_shape(self, vector_in: Array, vector_out: Array):
-    num_batch = vector_in.shape[0]
-    chex.assert_shape(vector_out, (num_batch,))
+  def _check_output_shape(self, x_in: Samples, x_out: Samples):
+    batch_sizes = jax.tree_util.tree_map(lambda x: np.shape(x)[0],
+                                         x_in)
+    def get_first_leaf(tree):
+      return jax.tree_util.tree_leaves(tree)[0]
+    first_batch_size = get_first_leaf(batch_sizes)
+    chex.assert_shape(x_out, (first_batch_size,))
 
   def _check_members_types(self, config: ConfigDict, expected_members_types):
     for elem, elem_type in expected_members_types:
@@ -98,16 +112,6 @@ class LogDensity(metaclass=abc.ABCMeta):
             elem_type)
         raise TypeError(msg)
 
-  def _check_expected_num_dim(self,
-                              num_dim: int,
-                              expected_num_dim: int,
-                              class_name: str):
-    """In the case where num_dim has an expected static value, confirm this."""
-    if expected_num_dim != num_dim:
-      msg = "num_dim is expected to be "+str(expected_num_dim)
-      msg += " for density "+class_name
-      raise ValueError(msg)
-
 
 class NormalDistribution(LogDensity):
   """A univariate normal distribution with configurable scale and location.
@@ -115,15 +119,16 @@ class NormalDistribution(LogDensity):
   num_dim should be 1 and config should include scalars "loc" and "scale"
   """
 
-  def _check_constructor_inputs(self, config: ConfigDict, num_dim: int):
-    self._check_expected_num_dim(num_dim, 1, type(self).__name__)
+  def _check_constructor_inputs(self, config: ConfigDict,
+                                sample_shape: SampleShape):
+    assert_trees_all_equal(sample_shape, (1,))
     expected_members_types = [("loc", float),
                               ("scale", float),
                               ]
 
     self._check_members_types(config, expected_members_types)
 
-  def evaluate_log_density(self, x: Array) -> Array:
+  def evaluate_log_density(self, x: Samples) -> Array:
     output = norm.logpdf(x,
                          loc=self._config.loc,
                          scale=self._config.scale)[:, 0]
@@ -137,16 +142,16 @@ class MultivariateNormalDistribution(LogDensity):
   Each element of the diagonal covariance matrix has value config.diagonal_cov
   """
 
-  def _check_constructor_inputs(self, config: ConfigDict, unused_dim: int):
-    expected_members_types = [("shared_mean", float),
-                              ("diagonal_cov", float)
-                              ]
-
+  def _check_constructor_inputs(self, config: ConfigDict,
+                                sample_shape: SampleShape):
+    expected_members_types = [("shared_mean", float), ("diagonal_cov", float)]
+    assert len(sample_shape) == 1
     self._check_members_types(config, expected_members_types)
 
   def evaluate_log_density(self, x: Array) -> Array:
-    mean = jnp.ones(self._num_dim) * self._config.shared_mean
-    cov = jnp.diag(jnp.ones(self._num_dim) * self._config.diagonal_cov)
+    num_dim = np.shape(x)[1]
+    mean = jnp.ones(num_dim) * self._config.shared_mean
+    cov = jnp.diag(jnp.ones(num_dim) * self._config.diagonal_cov)
     output = multivariate_normal.logpdf(x,
                                         mean=mean,
                                         cov=cov)
@@ -159,17 +164,20 @@ class FunnelDistribution(LogDensity):
   num_dim should be 10. config is unused in this case.
   """
 
-  def  _check_constructor_inputs(self, unused_config: ConfigDict, num_dim: int):
-    self._check_expected_num_dim(num_dim, 10, type(self).__name__)
+  def  _check_constructor_inputs(self, config: ConfigDict,
+                                 sample_shape: SampleShape):
+    del config
+    assert_trees_all_equal(sample_shape, (10,))
 
   def evaluate_log_density(self, x: Array) -> Array:
+    num_dim = self._sample_shape[0]
     def unbatched(x):
       v = x[0]
       log_density_v = norm.logpdf(v,
                                   loc=0.,
                                   scale=3.)
       variance_other = jnp.exp(v)
-      other_dim = self._num_dim - 1
+      other_dim = num_dim - 1
       cov_other = jnp.eye(other_dim) * variance_other
       mean_other = jnp.zeros(other_dim)
       log_density_other = multivariate_normal.logpdf(x[1:],
@@ -200,11 +208,12 @@ class LogGaussianCoxPines(LogDensity):
 
   def __init__(self,
                config: ConfigDict,
-               num_dim: int):
-    super().__init__(config, num_dim)
+               sample_shape: SampleShape):
+    super().__init__(config, sample_shape)
 
     # Discretization is as in Controlled Sequential Monte Carlo
     # by Heng et al 2017 https://arxiv.org/abs/1708.08396
+    num_dim = sample_shape[0]
     self._num_latents = num_dim
     self._num_grid_per_dim = int(np.sqrt(num_dim))
 
@@ -244,9 +253,12 @@ class LogGaussianCoxPines(LogDensity):
     else:
       self._posterior_log_density = self.unwhitened_posterior_log_density
 
-  def  _check_constructor_inputs(self, config: ConfigDict, num_dim: int):
+  def  _check_constructor_inputs(self, config: ConfigDict,
+                                 sample_shape: SampleShape):
     expected_members_types = [("use_whitened", bool)]
     self._check_members_types(config, expected_members_types)
+    num_dim = sample_shape[0]
+    assert_trees_all_equal(sample_shape, (num_dim,))
     num_grid_per_dim = int(np.sqrt(num_dim))
     if num_grid_per_dim * num_grid_per_dim != num_dim:
       msg = ("num_dim needs to be a square number for LogGaussianCoxPines "
@@ -291,8 +303,10 @@ class ChallengingTwoDimensionalMixture(LogDensity):
   num_dim should be 2. config is unused in this case.
   """
 
-  def _check_constructor_inputs(self, unused_config: ConfigDict, num_dim: int):
-    self._check_expected_num_dim(num_dim, 2, type(self).__name__)
+  def _check_constructor_inputs(self, config: ConfigDict,
+                                sample_shape: SampleShape):
+    del config
+    assert_trees_all_equal(sample_shape, (2,))
 
   def raw_log_density(self, x: Array) -> Array:
     """A raw log density that we will then symmetrize."""
@@ -349,8 +363,9 @@ class AutoEncoderLikelihood(LogDensity):
 
   """
 
-  def __init__(self, config: ConfigDict, num_dim: int):
-    super().__init__(config, num_dim)
+  def __init__(self, config: ConfigDict, sample_shape: SampleShape):
+    super().__init__(config, sample_shape)
+    self._num_dim = sample_shape[0]
     self._vae_params = self._get_vae_params(config.params_filename)
     test_batch_size = 1
     test_ds = vae_lib.load_dataset(tfds.Split.TEST, test_batch_size)
@@ -361,11 +376,9 @@ class AutoEncoderLikelihood(LogDensity):
     assert self._test_image.shape[1:] == vae_lib.MNIST_IMAGE_SHAPE
     self.entropy_eval = hk.transform(self.cross_entropy_eval_func)
 
-  def _check_constructor_inputs(self, config: ConfigDict, num_dim: int):
-    self._check_expected_num_dim(num_dim, 30, type(self).__name__)
-    expected_members_types = [("params_filename", str),
-                              ("image_index", int)
-                              ]
+  def _check_constructor_inputs(self, config: ConfigDict,
+                                sample_shape: SampleShape):
+    assert_trees_all_equal(sample_shape, (30,))
     num_mnist_test = 10000
     in_range = config.image_index >= 0 and config.image_index < num_mnist_test
     if not in_range:
@@ -454,13 +467,15 @@ class PhiFourTheory(LogDensity):
 
   def __init__(self,
                config: ConfigDict,
-               num_dim: int):
-    super().__init__(config, num_dim)
-    self._num_grid_per_dim = int(np.sqrt(num_dim))
+               sample_shape: SampleShape):
+    super().__init__(config, sample_shape)
+    self._num_grid_per_dim = int(np.sqrt(sample_shape[0]))
 
-  def  _check_constructor_inputs(self, config: ConfigDict, num_dim: int):
+  def  _check_constructor_inputs(self, config: ConfigDict,
+                                 sample_shape: SampleShape):
     expected_members_types = [("mass_squared", float),
                               ("bare_coupling", float)]
+    num_dim = sample_shape[0]
     self._check_members_types(config, expected_members_types)
     num_grid_per_dim = int(np.sqrt(num_dim))
     if num_grid_per_dim * num_grid_per_dim != num_dim:
@@ -476,3 +491,43 @@ class PhiFourTheory(LogDensity):
 
   def evaluate_log_density(self, x: Array) -> Array:
     return jax.vmap(self.reshape_and_call)(x)
+
+
+class ManyWell(LogDensity):
+  """Many well log density.
+
+  See:
+    Midgeley, Stimper et al. Flow Annealed Importance Sampling Bootstrap. 2022.
+    Wu et al. Stochastic Normalizing Flows. 2020.
+  """
+
+  def __init__(self, config: ConfigDict, sample_shape: SampleShape):
+    super().__init__(config, sample_shape)
+    self._num_dim = sample_shape[0]
+
+  def  _check_constructor_inputs(self, config: ConfigDict,
+                                 sample_shape: SampleShape):
+    num_dim = sample_shape[0]
+    if num_dim % 2 != 0:
+      msg = ("sample_shape[0] needs to be even.")
+      raise ValueError(msg)
+
+  def single_well_log_density(self, x) -> Array:
+    chex.assert_shape(x, (2,))
+    # Here we index from 0 instead of 1 which differs from the cited papers.
+    x_zero_term = (
+        -1.0 * jnp.power(x[0], 4) + 6.0 * jnp.power(x[0], 2) + 0.5 * x[0]
+    )
+    x_one_term = -0.5 * jnp.power(x[1], 2)
+    return x_zero_term + x_one_term
+
+  def many_well_log_density(self, x: Array) -> Array:
+    chex.assert_rank(x, 2)
+    per_group_log_densities = jax.vmap(self.single_well_log_density)(x)
+    return jnp.sum(per_group_log_densities)
+
+  def evaluate_log_density(self, x: Array) -> Array:
+    chex.assert_rank(x, 2)
+    (num_batch, num_dim) = x.shape
+    reshaped_x = jnp.reshape(x, (num_batch, num_dim//2, 2))
+    return jax.vmap(self.many_well_log_density)(reshaped_x)

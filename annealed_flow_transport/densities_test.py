@@ -71,7 +71,7 @@ class BasicShapesTest(parameterized.TestCase):
     test_matrix = jnp.arange(num_dim * num_batch).reshape((num_batch, num_dim))
     if not config:
       config = ConfigDict()
-    test_density = test_class(config, num_dim)
+    test_density = test_class(config, (num_dim,))
     output_log_densities = test_density(test_matrix)
     self.assertEqual(output_log_densities.shape, (num_batch,))
 
@@ -87,7 +87,7 @@ class VAETest(parameterized.TestCase):
     config = ConfigDict()
     config.params_filename = join(dirname(__file__), 'data/vae.pickle')
     config.image_index = digit_index
-    vae_density = AutoEncoderLikelihood(config, 30)
+    vae_density = AutoEncoderLikelihood(config, (30,))
     hex_digit_hash = hashlib.md5(vae_density._test_image).hexdigest()
     self.assertEqual(hex_digit_hash, target_md5_hash)
 
@@ -98,7 +98,7 @@ class VAETest(parameterized.TestCase):
     config = ConfigDict()
     config.params_filename = join(dirname(__file__), 'data/vae.pickle')
     config.image_index = 0
-    vae_density = AutoEncoderLikelihood(config, num_dim)
+    vae_density = AutoEncoderLikelihood(config, (num_dim,))
     test_input = (jnp.arange(total_points).reshape(num_batch, num_dim) -
                   100.) / 100.
     test_output = vae_density(test_input)
@@ -109,7 +109,7 @@ class VAETest(parameterized.TestCase):
     config = ConfigDict()
     config.params_filename = join(dirname(__file__), 'data/vae.pickle')
     config.image_index = 0
-    vae_density = AutoEncoderLikelihood(config, num_dim)
+    vae_density = AutoEncoderLikelihood(config, (num_dim,))
     test_input = (jnp.arange(num_dim)-num_dim)/num_dim
     test_output = vae_density.log_prior(test_input)
     reference_output = jnp.sum(jax.vmap(norm.logpdf)(test_input))
@@ -123,7 +123,7 @@ class VAETest(parameterized.TestCase):
     config = ConfigDict()
     config.params_filename = join(dirname(__file__), 'data/vae.pickle')
     config.image_index = 0
-    vae_density = AutoEncoderLikelihood(config, num_dim)
+    vae_density = AutoEncoderLikelihood(config, (num_dim,))
     test_input = (jnp.arange(total_points).reshape(num_batch, num_dim) -
                   100.) / 100.
     test_output = vae_density(test_input)
@@ -143,7 +143,7 @@ class PhiFourTest(parameterized.TestCase):
     num_dim = 16
     trial_values = jnp.linspace(-2., 2., batch_size * num_dim).reshape(
         (batch_size, num_dim))
-    log_density = PhiFourTheory(config, num_dim)
+    log_density = PhiFourTheory(config, (num_dim,))
     log_density_val = log_density(trial_values)
     self.assertTrue(log_density_val.shape, (batch_size))
 

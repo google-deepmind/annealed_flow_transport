@@ -25,7 +25,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-Array = jnp.ndarray
+Array = tp.Array
 LogDensityNoStep = tp.LogDensityNoStep
 InitialSampler = tp.InitialSampler
 RandomKey = tp.RandomKey

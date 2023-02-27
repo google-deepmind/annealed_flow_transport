@@ -30,13 +30,14 @@ def get_config():
   config.vi_report_step = 100
   config.num_layers = 1
   config.step_logging = True
-  config.num_temps = 1001
+  config.num_temps = 11
   config.resample_threshold = 0.3
   config.write_samples = True
   config.stopping_criterion = 'time'
   config.use_resampling = True
   config.use_markov = True
   config.algo = 'craft'
+  config.use_path_gradient = False
   config.evaluation_algo = 'pimh'
   config.num_evaluation_samples = 1000
   config.optim_markov = False

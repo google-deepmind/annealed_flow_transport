@@ -33,9 +33,11 @@ class DiagonalAffineTest(parameterized.TestCase):
 
   def test_identity_init(self):
     # Config dict is unused here so pass None.
+    flow_config = ConfigDict()
+    flow_config.sample_shape = (3,)
     def compute_flow(x_loc):
-      diagonal_affine_flow = flows.DiagonalAffine(None)
-      return diagonal_affine_flow(x_loc)
+      diagonal_affine_flow = flows.DiagonalAffine(flow_config)
+      return diagonal_affine_flow.transform_and_log_abs_det_jac(x_loc)
     x_in = jnp.array([1., 2., 3.])
     flow_func = hk.without_apply_rng(hk.transform(compute_flow))
     dummy_key = jax.random.PRNGKey(13)
@@ -44,11 +46,24 @@ class DiagonalAffineTest(parameterized.TestCase):
     _assert_equal_vec(self, x_out, x_in)
     _assert_equal_vec(self, log_det_abs_jac, 0.)
 
+    # Now test the inverse.
+    def compute_inverse_flow(x_loc):
+      diagonal_affine_flow = flows.DiagonalAffine(flow_config)
+      return diagonal_affine_flow.inv_transform_and_log_abs_det_jac(x_loc)
+
+    inv_flow_func = hk.without_apply_rng(hk.transform(compute_inverse_flow))
+    x_inv, log_det_abs_jac_inv = inv_flow_func.apply(init_params, x_in)
+
+    _assert_equal_vec(self, x_in, x_inv)
+    _assert_equal_vec(self, log_det_abs_jac_inv, 0.)
+
   def test_non_identity(self):
+    flow_config = ConfigDict()
+    flow_config.sample_shape = (3,)
     # Config dict is unused here so pass None.
     def compute_flow(x_loc):
-      diagonal_affine_flow = flows.DiagonalAffine(None)
-      return diagonal_affine_flow(x_loc)
+      diagonal_affine_flow = flows.DiagonalAffine(flow_config)
+      return diagonal_affine_flow.transform_and_log_abs_det_jac(x_loc)
     x_in = jnp.array([1., 2., 3.])
     flow_func = hk.without_apply_rng(hk.transform(compute_flow))
     dummy_key = jax.random.PRNGKey(13)
@@ -67,6 +82,17 @@ class DiagonalAffineTest(parameterized.TestCase):
     numerical_jacobian = jax.jacobian(short_func)(x_in)
     numerical_log_abs_det = jnp.linalg.slogdet(numerical_jacobian)[1]
     _assert_equal_vec(self, log_det_abs_jac, numerical_log_abs_det)
+
+    # Now test the inverse.
+    def compute_inverse_flow(x_loc):
+      diagonal_affine_flow = flows.DiagonalAffine(flow_config)
+      return diagonal_affine_flow.inv_transform_and_log_abs_det_jac(x_loc)
+
+    inv_flow_func = hk.without_apply_rng(hk.transform(compute_inverse_flow))
+    x_inv, log_det_abs_jac_inv = inv_flow_func.apply(new_params, x_out)
+
+    _assert_equal_vec(self, x_in, x_inv)
+    _assert_equal_vec(self, log_det_abs_jac, -1. * log_det_abs_jac_inv)
 
 
 class SplinesTest(parameterized.TestCase):
@@ -167,7 +193,7 @@ class SplineInverseAutoregressiveFlowTest(parameterized.TestCase):
     def forward(x):
       config = self._get_config(identity_init)
       flow = flows.SplineInverseAutoregressiveFlow(config)
-      return flow(x)
+      return flow.transform_and_log_abs_det_jac(x)
     forward_fn = hk.without_apply_rng(hk.transform(forward))
     return forward_fn
 
@@ -213,7 +239,7 @@ class AffineInverseAutoregressiveFlowTest(parameterized.TestCase):
     def forward(x):
       config = self._get_config(identity_init)
       flow = flows.AffineInverseAutoregressiveFlow(config)
-      return flow(x)
+      return flow.transform_and_log_abs_det_jac(x)
     forward_fn = hk.without_apply_rng(hk.transform(forward))
     return forward_fn
 
@@ -264,7 +290,7 @@ class RationalQuadraticSplineFlowTest(parameterized.TestCase):
     def forward(x):
       config = self._get_config()
       flow = flows.RationalQuadraticSpline(config)
-      return flow(x)
+      return flow.transform_and_log_abs_det_jac(x)
     forward_fn = hk.without_apply_rng(hk.transform(forward))
     x = jnp.array([1., 2., 3.])
     key = jax.random.PRNGKey(13)
@@ -308,25 +334,26 @@ class ComposedFlowsTest(parameterized.TestCase):
   def test_identity(self):
     # Test that two identity flows composed gives an identity flow.
     forward_fn = self._get_transformed(is_identity=True)
-    x = jnp.array([1., 2., 3.])
+    x = jnp.array([[1., 2., 3.]])
     key = jax.random.PRNGKey(13)
     params = forward_fn.init(key,
                              x)
     output, log_det_jac = forward_fn.apply(params, x)
     _assert_equal_vec(self, x, output, atol=1e-6)
-    _assert_equal_vec(self, log_det_jac, 0., atol=1e-6)
+    _assert_equal_vec(self, log_det_jac, jnp.array([0.]), atol=1e-6)
 
   def test_jacobian(self):
     # Test the numerical Jacobian of the composition of two non-identity flows.
     forward_fn = self._get_transformed(is_identity=False)
-    x = jnp.array([1., 2., 3.])
+    x = jnp.array([[1., 2., 3.]])
     key = jax.random.PRNGKey(13)
     params = forward_fn.init(key,
                              x)
-    curry_val = lambda x: forward_fn.apply(params, x)[0]
-    curry_jac = lambda x: forward_fn.apply(params, x)[1]
+    curry_val = lambda x: forward_fn.apply(params, x[None])[0][0, :]
+    curry_jac = lambda x: forward_fn.apply(params, x)[1][0]
     jac_func = jax.jacobian(curry_val)
-    jac = jac_func(x)
+    jac = jac_func(x[0])
+    print(jac)
     target_log_det_jac = jnp.linalg.slogdet(jac)[1]
     test_log_det_jac = curry_jac(x)
     _assert_equal_vec(self, target_log_det_jac, test_log_det_jac, atol=1e-6)
@@ -455,6 +482,56 @@ class TestConvAffineCoupling(parameterized.TestCase):
     _assert_equal_vec(self, target_log_det_jac, test_log_det_jac)
     upper_triangle = jnp.triu(jac, k=1)
     _assert_equal_vec(self, upper_triangle, jnp.zeros_like(upper_triangle))
+
+  def test_inverse(self):
+    num_middle_channels = 3
+    num_middle_layers = 5
+    image_shape = (3, 2)
+    kernel_shape = (3, 3)
+    mask = jnp.array([[1, 1], [1, 0], [0, 0]])
+    def forward_and_inverse(x):
+      flow = flows.ConvAffineCoupling(
+          mask=mask,
+          conv_num_middle_channels=num_middle_channels,
+          conv_num_middle_layers=num_middle_layers,
+          conv_kernel_shape=kernel_shape,
+          identity_init=False)
+      y, fw_ldj = flow(x)
+      recons_x, bw_ldj = flow.inverse(y)
+      return y, fw_ldj, recons_x, bw_ldj
+    forward_fn = hk.without_apply_rng(hk.transform(forward_and_inverse))
+    key = jax.random.PRNGKey(2)
+    subkey, key = jax.random.split(key)
+    random_input = jax.random.normal(subkey, shape=image_shape)
+    params = forward_fn.init(key, random_input)
+    unused_y, fw_ldj, recons_x, bw_ldj = forward_fn.apply(params, random_input)
+    _assert_equal_vec(self, recons_x, random_input)
+    _assert_equal_vec(self, fw_ldj, -1.*bw_ldj)
+
+
+class TestHaikuParameterShapes(parameterized.TestCase):
+
+  def test_diagonal_affine(self):
+    flow_config = ConfigDict()
+    flow_config.sample_shape = (2,)
+    num_dim = 2
+    num_batch = 3
+    def run_flow(x):
+      flow = flows.DiagonalAffine(config=flow_config)
+      return flow(x)
+
+    x_in = jnp.zeros((num_batch, num_dim))
+    forward_fn = hk.without_apply_rng(hk.transform(run_flow))
+    key = jax.random.PRNGKey(1)
+    params = forward_fn.init(key, x_in)
+    bias_shape = params['diagonal_affine']['bias'].shape
+    unconst_diag_shape = params['diagonal_affine']['unconst_diag'].shape
+    self.assertEqual(bias_shape, (num_dim,))
+    self.assertEqual(unconst_diag_shape, (num_dim,))
+    x_out, log_abs_det = forward_fn.apply(params, x_in)
+    self.assertEqual(x_out.shape, x_in.shape)
+    self.assertEqual(log_abs_det.shape, (num_batch,))
+
 
 if __name__ == '__main__':
   absltest.main()

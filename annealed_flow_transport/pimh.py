@@ -17,7 +17,7 @@ import annealed_flow_transport.aft_types as tp
 import jax
 import jax.numpy as jnp
 
-Array = jnp.ndarray
+Array = tp.Array
 ParticleState = tp.ParticleState
 RandomKey = tp.RandomKey
 

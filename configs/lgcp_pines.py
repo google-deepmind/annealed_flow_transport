@@ -35,7 +35,8 @@ def get_config():
   config.stopping_criterion = 'time'
   config.use_resampling = True
   config.use_markov = True
-  config.algo = 'smc'
+  config.use_path_gradient = False
+  config.algo = 'craft'
   config.craft_num_iters = 200
   config.snf_num_iters = 1000
   config.craft_batch_size = 2000
@@ -69,6 +70,7 @@ def get_config():
 
   flow_config = ConfigDict()
   flow_config.type = 'DiagonalAffine'
+  flow_config.sample_shape = config.sample_shape
   config.flow_config = flow_config
   initial_sampler_config = ConfigDict()
   initial_sampler_config.initial_sampler = 'MultivariateNormalDistribution'

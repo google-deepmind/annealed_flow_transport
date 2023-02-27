@@ -42,6 +42,8 @@ assert_equal_shape = chex.assert_equal_shape
 AlgoResultsTuple = tp.AlgoResultsTuple
 ParticleState = tp.ParticleState
 
+assert_trees_all_equal_shapes = chex.assert_trees_all_equal_shapes
+
 
 def vfe_naive_importance(initial_sampler: InitialSampler,
                          initial_density: LogDensityNoStep,
@@ -55,7 +57,7 @@ def vfe_naive_importance(initial_sampler: InitialSampler,
                             config.batch_size,
                             config.sample_shape)
   transformed_samples, log_det_jacs = flow_apply(flow_params, samples)
-  assert_equal_shape([transformed_samples, samples])
+  assert_trees_all_equal_shapes(transformed_samples, samples)
   log_density_target = final_density(transformed_samples)
   log_density_initial = initial_density(samples)
   assert_equal_shape([log_density_initial, log_density_target])
@@ -82,7 +84,7 @@ def vi_free_energy(flow_params: FlowParams,
                             config.batch_size,
                             config.sample_shape)
   transformed_samples, log_det_jacs = flow_apply(flow_params, samples)
-  assert_equal_shape([transformed_samples, samples])
+  assert_trees_all_equal_shapes(transformed_samples, samples)
   log_density_target = final_density(transformed_samples)
   log_density_initial = initial_density(samples)
   assert_equal_shape([log_density_initial, log_density_target])
@@ -131,6 +133,13 @@ def outer_loop_vi(initial_sampler: InitialSampler,
                           config)
 
   free_energy_and_grad = jax.jit(jax.value_and_grad(vi_free_energy_short))
+
+  def short_vfe_naive_importance(loc_flow_params, loc_key):
+    return vfe_naive_importance(initial_sampler, initial_log_density,
+                                final_log_density, flow_apply, loc_flow_params,
+                                loc_key, config).log_normalizer_estimate
+  jit_vfe_naive_importance = jax.jit(short_vfe_naive_importance)
+
   flow_params = flow_init_params
   opt_state = opt_init_state
 
@@ -148,22 +157,21 @@ def outer_loop_vi(initial_sampler: InitialSampler,
 
   step = 0
   while step < config.vi_iters:
-    key, flow_params, curr_free_energy, opt_state = jit_vi_update(key,
-                                                                  flow_params,
-                                                                  opt_state)
-    if step % config.vi_report_step == 0:
-      logging.info('Step %05d: free_energy %f:', step, curr_free_energy)
-      if config.vi_estimator == 'elbo':
-        log_normalizer_estimate = -1.*curr_free_energy
-      elif config.vi_estimator == 'importance':
-        subkey, key = jax.random.split(key, 2)
-        particle_state = vfe_naive_importance(
-            initial_sampler, initial_log_density, final_log_density, flow_apply,
-            flow_params, subkey, config)
-        log_normalizer_estimate = particle_state.log_normalizer_estimate
-      else:
-        raise NotImplementedError
-      logging.info('Log normalizer estimate %f:', log_normalizer_estimate)
+    with jax.profiler.StepTraceAnnotation('train', step_num=step):
+      key, flow_params, curr_free_energy, opt_state = jit_vi_update(key,
+                                                                    flow_params,
+                                                                    opt_state)
+      if step % config.vi_report_step == 0:
+        logging.info('Step %05d: free_energy %f:', step, curr_free_energy)
+        if config.vi_estimator == 'elbo':
+          log_normalizer_estimate = -1.*curr_free_energy
+        elif config.vi_estimator == 'importance':
+          subkey, key = jax.random.split(key, 2)
+          log_normalizer_estimate = jit_vfe_naive_importance(flow_params,
+                                                             subkey)
+        else:
+          raise NotImplementedError
+        logging.info('Log normalizer estimate %f:', log_normalizer_estimate)
 
     step += 1
 

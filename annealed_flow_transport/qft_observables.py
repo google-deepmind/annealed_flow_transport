@@ -15,13 +15,13 @@
 """Quantum field theory (QFT) observables, particularly phi^four theory."""
 from typing import Tuple
 
+import annealed_flow_transport.aft_types as tp
 import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-
-Array = jnp.ndarray
+Array = tp.Array
 
 
 def estimate_two_point_green(offset_x: Tuple[int, int],

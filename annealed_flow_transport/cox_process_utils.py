@@ -16,6 +16,7 @@
 
 import itertools
 
+import annealed_flow_transport.aft_types as tp
 import chex
 import jax
 import jax.numpy as jnp
@@ -24,7 +25,7 @@ import numpy as np
 
 # TypeDefs
 NpArray = np.ndarray
-Array = jnp.ndarray
+Array = tp.Array
 
 
 def get_bin_counts(array_in: NpArray,

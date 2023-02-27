@@ -15,7 +15,7 @@
 """Shared custom defined types used in more than one source file."""
 from typing import Any, Callable, Mapping, NamedTuple, Tuple
 
-import jax.numpy as jnp
+import chex
 import ml_collections
 import numpy as np
 import optax
@@ -23,18 +23,20 @@ import optax
 VaeBatch = Mapping[str, np.ndarray]
 
 ConfigDict = ml_collections.ConfigDict
-Array = jnp.ndarray
-LogDensityByStep = Callable[[int, Array], Array]
+Array = Any
+Samples = chex.ArrayTree
+SampleShape = Any
+LogDensityByStep = Any
 RandomKey = Array
 AcceptanceTuple = Tuple[Array, Array, Array]
-MarkovKernelApply = Callable[[int, RandomKey, Array], Tuple[Array,
-                                                            AcceptanceTuple]]
+MarkovKernelApply = Callable[[int, RandomKey, Samples],
+                             Tuple[Samples, AcceptanceTuple]]
 OptState = optax.OptState
 UpdateFn = optax.TransformUpdateFn
 FlowParams = Any
-FlowApply = Callable[[FlowParams, Array], Tuple[Array, Array]]
-LogDensityNoStep = Callable[[Array], Array]
-InitialSampler = Callable[[RandomKey, int, Tuple[int]], Array]
+FlowApply = Callable[[FlowParams, Samples], Tuple[Samples, Array]]
+LogDensityNoStep = Callable[[Samples], Array]
+InitialSampler = Callable[[RandomKey, int, Tuple[int]], Samples]
 FreeEnergyAndGrad = Callable[[FlowParams, Array, Array, int], Tuple[Array,
                                                                     Array]]
 FreeEnergyEval = Callable[[FlowParams, Array, Array, int], Array]
@@ -59,7 +61,7 @@ class VfesTuple(NamedTuple):
 
 
 class AlgoResultsTuple(NamedTuple):
-  test_samples: Array
+  test_samples: Samples
   test_log_weights: Array
   log_normalizer_estimate: Array
   delta_time: float
@@ -67,17 +69,17 @@ class AlgoResultsTuple(NamedTuple):
 
 
 class ParticleState(NamedTuple):
-  samples: Array
+  samples: Samples
   log_weights: Array
   log_normalizer_estimate: Array
 
 
 class VAEResult(NamedTuple):
-  sample_image: jnp.ndarray
-  reconst_sample: jnp.ndarray
-  latent_mean: jnp.ndarray
-  latent_std: jnp.ndarray
-  logits: jnp.ndarray
+  sample_image: Array
+  reconst_sample: Array
+  latent_mean: Array
+  latent_std: Array
+  logits: Array
 
 
 ParticlePropose = Callable[[RandomKey], ParticleState]

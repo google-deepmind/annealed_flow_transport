@@ -3,7 +3,7 @@
 
 The release contains implementations of
 
-* Continual Repeated Annealed Flow Transport Monte Carlo (CRAFT), (this paper).
+* Continual Repeated Annealed Flow Transport Monte Carlo (CRAFT), Matthews et al (2022).
 * Annealed Flow Transport Monte Carlo (AFT), Arbel et al (2021).
 * Stochastic Normalizing Flows (SNF), Wu et al (2020).
 * Sequential Monte Carlo samplers (SMC), Del Moral et al (2006).
@@ -15,11 +15,14 @@ See https://arxiv.org/abs/2102.07501 for more details.
 
 The implementation of SNFs differs from the original one in that it exploits
 the connection with Annealed Importance Sampling with added normalizing flows.
-The training dynamics are still the same. 
+The training dynamics are still the same.
 
 The implementation of Particle Markov Chain Monte Carlo is specialized to
-the case of a final target of interest rather than a time series and 
+the case of a final target of interest rather than a time series and
 assumes an independent proposal, which can be based on SMC, VI or CRAFT.
+
+This is research code. If you are interested in comparing to our work and
+have questions about how to use it please do reach out. 
 
 ## Installation
 
@@ -28,7 +31,7 @@ editable install. A reliable way to do this is within a
 [virtual environment](https://docs.python-guide.org/dev/virtualenvs/).
 
 ```
-virtualenv -p python3.9 ~/venv/annealed_flow_transport
+virtualenv -p python3.10 ~/venv/annealed_flow_transport
 source ~/venv/annealed_flow_transport/bin/activate
 pip install -e .
 ```
@@ -95,15 +98,18 @@ Full text is found at https://creativecommons.org/licenses/by/4.0/legalcode.
 
 ## Giving Credit
 
-If you use this code in your work, please cite the corresponding paper. If you use our baselines such as SMC, SNF, PIMH, please cite the paper of the two below where we first used the method.
+If you use this code in your work, please cite the corresponding paper i.e Arbel et al. 2021 for AFT and Matthews et al. 2022 for CRAFT. 
+
+If you use our baselines such as VI, SMC, SNF, PIMH, please cite the paper of the two below where we first used the method: For SMC and VI this is Arbel et al. 2021, whereas for PIMH and SNF this is Matthews et al. 2022.
 
 ```
-@article{CRAFT2022,
+@InProceedings{CRAFT2022,
   title={Continual Repeated Annealed Flow Transport Monte Carlo},
   author={Alexander G. D. G. Matthews and Michael Arbel and Danilo J. Rezende and Arnaud Doucet},
-  Journal = {arXiv},
+  booktitle = {Proceedings of the 39th International Conference on Machine Learning},
+  series = {Proceedings of Machine Learning Research},
   year={2022},
-  month = {Jan}
+  month = {Jul}
 }
 ```
 

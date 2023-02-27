@@ -26,7 +26,6 @@ from typing import Tuple
 
 from absl import logging
 from annealed_flow_transport import flow_transport
-from annealed_flow_transport import markov_kernel
 from annealed_flow_transport import resampling
 import annealed_flow_transport.aft_types as tp
 import chex
@@ -34,13 +33,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-Array = jnp.ndarray
+Array = tp.Array
 LogDensityNoStep = tp.LogDensityNoStep
 InitialSampler = tp.InitialSampler
 RandomKey = tp.RandomKey
 MarkovKernelApply = tp.MarkovKernelApply
 LogDensityByStep = tp.LogDensityByStep
 assert_equal_shape = chex.assert_equal_shape
+assert_trees_all_equal_shapes = chex.assert_trees_all_equal_shapes
 AlgoResultsTuple = tp.AlgoResultsTuple
 ParticleState = tp.ParticleState
 
@@ -77,7 +77,7 @@ def inner_loop(
     subkey, key = jax.random.split(key)
     resampled_samples, log_weights_resampled = resampling.optionally_resample(
         subkey, log_weights_new, samples, config.resample_threshold)
-    assert_equal_shape([resampled_samples, samples])
+    assert_trees_all_equal_shapes(resampled_samples, samples)
     assert_equal_shape([log_weights_resampled, log_weights_new])
   else:
     resampled_samples = samples
@@ -143,17 +143,17 @@ def fast_outer_loop_smc(density_by_step: LogDensityByStep,
   return particle_state
 
 
-def outer_loop_smc(initial_log_density: LogDensityNoStep,
-                   final_log_density: LogDensityNoStep,
+def outer_loop_smc(density_by_step: LogDensityByStep,
                    initial_sampler: InitialSampler,
+                   markov_kernel_by_step: MarkovKernelApply,
                    key: RandomKey,
                    config) -> AlgoResultsTuple:
   """The outer loop for Annealed Flow Transport Monte Carlo.
 
   Args:
-    initial_log_density: The log density of the starting distribution.
-    final_log_density: The log density of the target distribution.
+    density_by_step: The log density for each annealing step.
     initial_sampler: A function that produces the initial samples.
+    markov_kernel_by_step: Markov transition kernel for each annealing step.
     key: A Jax random key.
     config: A ConfigDict containing the configuration.
 
@@ -161,14 +161,14 @@ def outer_loop_smc(initial_log_density: LogDensityNoStep,
     An AlgoResults tuple containing a summary of the results.
   """
   num_temps = config.num_temps
-  density_by_step = flow_transport.GeometricAnnealingSchedule(
-      initial_log_density, final_log_density, num_temps)
-  markov_kernel_by_step = markov_kernel.MarkovTransitionKernel(
-      config.mcmc_config, density_by_step, num_temps)
-
   key, subkey = jax.random.split(key)
 
+  initial_sampler_start = time.time()
   samples = initial_sampler(subkey, config.batch_size, config.sample_shape)
+  initial_sampler_finish = time.time()
+  initial_sampler_time_diff = initial_sampler_finish - initial_sampler_start
+  logging.info('Initial sampler time / seconds  %f: ',
+               initial_sampler_time_diff)
   log_weights = -jnp.log(config.batch_size) * jnp.ones(config.batch_size)
 
   logging.info('Jitting step...')
@@ -188,15 +188,14 @@ def outer_loop_smc(initial_log_density: LogDensityNoStep,
     subkey, key = jax.random.split(key)
     samples, log_weights, log_normalizer_increment, acceptance = inner_loop_jit(
         subkey, samples, log_weights, step)
-    acceptance_nuts = float(np.asarray(acceptance[0]))
-    acceptance_hmc = float(np.asarray(acceptance[1]))
-    acceptance_rwm = float(np.asarray(acceptance[2]))
+    acceptance_hmc = float(np.asarray(acceptance[0]))
+    acceptance_rwm = float(np.asarray(acceptance[1]))
     log_normalizer_estimate += log_normalizer_increment
     if step % config.report_step == 0:
-      beta = density_by_step.get_beta(step)
+      beta = density_by_step.get_beta(step)  # pytype: disable=attribute-error
       logging.info(
-          'Step %05d: beta %f Acceptance rate NUTS %f Acceptance rate HMC %f Acceptance rate RWM %f',
-          step, beta, acceptance_nuts, acceptance_hmc, acceptance_rwm)
+          'Step %05d: beta %f Acceptance rate HMC %f Acceptance rate RWM %f',
+          step, beta, acceptance_hmc, acceptance_rwm)
 
   finish_time = time.time()
   delta_time = finish_time - start_time

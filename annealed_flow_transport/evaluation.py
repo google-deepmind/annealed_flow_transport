@@ -32,10 +32,9 @@ import annealed_flow_transport.aft_types as tp
 import chex
 import haiku as hk
 import jax
-import jax.numpy as jnp
 
 # Type defs.
-Array = jnp.ndarray
+Array = tp.Array
 OptState = tp.OptState
 UpdateFn = tp.UpdateFn
 FlowParams = tp.FlowParams
@@ -133,9 +132,9 @@ def is_annealing_markov_kernel_algorithm(algo_name):
 def get_particle_propose(config) -> ParticlePropose:
   """Get a function that proposes particles and log normalizer."""
   log_density_initial = getattr(densities, config.initial_config.density)(
-      config.initial_config, config.sample_shape[0])
+      config.initial_config, config.sample_shape)
   log_density_final = getattr(densities, config.final_config.density)(
-      config.final_config, config.sample_shape[0])
+      config.final_config, config.sample_shape)
   initial_sampler = getattr(samplers,
                             config.initial_sampler_config.initial_sampler)(
                                 config.initial_sampler_config)
@@ -149,7 +148,7 @@ def get_particle_propose(config) -> ParticlePropose:
   if is_flow_algorithm(config.algo):
     def flow_func(x):
       flow = getattr(flows, config.flow_config.type)(config.flow_config)
-      return jax.vmap(flow)(x)
+      return flow(x)
     flow_forward_fn = hk.without_apply_rng(hk.transform(flow_func))
     flow_params = serialize.load_checkpoint(config.params_filename)
 

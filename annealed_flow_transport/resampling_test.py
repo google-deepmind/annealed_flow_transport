@@ -17,6 +17,7 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 from annealed_flow_transport import resampling
+import chex
 import jax
 import jax.numpy as jnp
 
@@ -97,6 +98,21 @@ class ResamplingTest(parameterized.TestCase):
     _assert_equal_vec(self, should_be_resamples, resamples)
     _assert_equal_vec(self, log_uniform_weights, should_be_uniform_weights)
     _assert_equal_vec(self, should_be_log_weights, log_weights)
+
+  def test_tree_resampling(self):
+    log_weights = jnp.array([0, -jnp.inf, -jnp.inf])
+    tree_component = jnp.arange(6).reshape((3, 2))
+    expected_tree_component = jnp.repeat(jnp.atleast_2d(tree_component[0, :]),
+                                         3, axis=0)
+    tree = (tree_component, (tree_component, tree_component))
+    expected_tree = (expected_tree_component, (expected_tree_component,
+                                               expected_tree_component))
+    key = jax.random.PRNGKey(1)
+    resampled_tree = resampling.simple_resampling(key,
+                                                  log_weights,
+                                                  tree)[0]
+    chex.assert_trees_all_equal(expected_tree, resampled_tree)
+
 
 if __name__ == '__main__':
   absltest.main()

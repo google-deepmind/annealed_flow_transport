@@ -17,10 +17,17 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 from annealed_flow_transport.flow_transport import GeometricAnnealingSchedule
+from annealed_flow_transport.flow_transport import get_delta
+from annealed_flow_transport.flow_transport import get_delta_path_grad
 from annealed_flow_transport.flow_transport import transport_free_energy_estimator
+from annealed_flow_transport.flows import DiagonalAffine
+import haiku as hk
 import jax
 import jax.numpy as jnp
 from jax.scipy.stats import norm
+import ml_collections
+
+ConfigDict = ml_collections.ConfigDict
 
 
 def _assert_equal_vec(tester, v1, v2, **kwargs):
@@ -82,9 +89,11 @@ class FlowTransportTest(parameterized.TestCase):
     estimator_value = transport_free_energy_estimator(samples=samples,
                                                       log_weights=log_weights,
                                                       flow_apply=flow_apply,
+                                                      inv_flow_apply=None,
                                                       flow_params=None,
                                                       log_density=step_density,
-                                                      step=1)
+                                                      step=1,
+                                                      use_path_gradient=False)
 
     # the target KL is analytically tractable as it is between two Gaussians.
     # the target KL is between normal b and c.
@@ -125,6 +134,68 @@ class FlowTransportTest(parameterized.TestCase):
     _assert_equal_vec(self,
                       interpolated_densities_final,
                       test_densities_final)
+
+
+class PathGradientTest(parameterized.TestCase):
+
+  def test_forward_consistency(self):
+    def initial_density(x):
+      return norm.logpdf(x, loc=-1., scale=2.).flatten()
+
+    def final_density(x):
+      return norm.logpdf(x, loc=1.5, scale=3.).flatten()
+
+    num_temps = 5.
+
+    annealing_schedule = GeometricAnnealingSchedule(initial_density,
+                                                    final_density,
+                                                    num_temps)
+    key = jax.random.PRNGKey(13)
+    num_batch = 7
+    num_dim = 1
+    subkey, key = jax.random.split(key)
+    samples = jax.random.normal(subkey, shape=(num_batch, num_dim))
+    temp_index = 2
+
+    flow_config = ConfigDict()
+    flow_config.sample_shape = (num_dim,)
+
+    def flow_func(x):
+      flow = DiagonalAffine(flow_config)
+      return flow(x)
+
+    def inv_flow_func(x):
+      flow = DiagonalAffine(flow_config)
+      return flow.inverse(x)
+
+    flow_fn = hk.without_apply_rng(hk.transform(flow_func))
+    inv_flow_fn = hk.without_apply_rng(hk.transform(inv_flow_func))
+    flow_init_params = flow_fn.init(key,
+                                    samples)
+    shift = 0.3
+    new_params = jax.tree_util.tree_map(lambda x: x+shift, flow_init_params)
+    flow_apply = flow_fn.apply
+    inv_flow_apply = inv_flow_fn.apply
+    delta_original = get_delta(samples,
+                               flow_apply,
+                               new_params,
+                               annealing_schedule,
+                               temp_index)
+    delta_path = get_delta_path_grad(samples,
+                                     flow_apply,
+                                     inv_flow_apply,
+                                     new_params,
+                                     annealing_schedule,
+                                     temp_index)
+
+    print('delta_original ', delta_original)
+    print('delta_path ', delta_path)
+    _assert_equal_vec(self,
+                      delta_original,
+                      delta_path)
+
+  def test_optimal_gradient(self):
+    pass
 
 if __name__ == '__main__':
   absltest.main()

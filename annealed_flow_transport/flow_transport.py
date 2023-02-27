@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """Shared math functions for flow transport SMC algorithms."""
-from typing import Tuple
+from typing import Any, Tuple, Union
 
 from annealed_flow_transport import resampling
 import annealed_flow_transport.aft_types as tp
@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
-Array = jnp.ndarray
+Array = tp.Array
 FlowApply = tp.FlowApply
 FlowParams = tp.FlowParams
 LogDensityByStep = tp.LogDensityByStep
@@ -30,7 +30,9 @@ LogDensityNoStep = tp.LogDensityNoStep
 MarkovKernelApply = tp.MarkovKernelApply
 AcceptanceTuple = tp.AcceptanceTuple
 RandomKey = tp.RandomKey
+Samples = tp.Samples
 assert_equal_shape = chex.assert_equal_shape
+assert_trees_all_equal_shapes = chex.assert_trees_all_equal_shapes
 
 
 class GeometricAnnealingSchedule(object):
@@ -52,7 +54,7 @@ class GeometricAnnealingSchedule(object):
 
   def __call__(self,
                step: int,
-               samples: Array):
+               samples: Samples):
     log_densities_final = self._final_log_density(samples)
     log_densities_initial = self._initial_log_density(samples)
     beta = self.get_beta(step)
@@ -61,7 +63,7 @@ class GeometricAnnealingSchedule(object):
     return interpolated_densities
 
 
-def get_delta_no_flow(samples: Array,
+def get_delta_no_flow(samples: Samples,
                       log_density: LogDensityByStep,
                       step: int) -> Array:
   log_density_values_current = log_density(step, samples)
@@ -71,7 +73,7 @@ def get_delta_no_flow(samples: Array,
   return deltas
 
 
-def get_delta(samples: Array,
+def get_delta(samples: Samples,
               flow_apply: FlowApply,
               flow_params: FlowParams,
               log_density: LogDensityByStep,
@@ -89,7 +91,7 @@ def get_delta(samples: Array,
     deltas: an array containing the difference for each sample.
   """
   transformed_samples, log_det_jacs = flow_apply(flow_params, samples)
-  assert_equal_shape([transformed_samples, samples])
+  assert_trees_all_equal_shapes(transformed_samples, samples)
   log_density_values_current = log_density(step, transformed_samples)
   log_density_values_previous = log_density(step-1, samples)
   assert_equal_shape([log_density_values_current, log_density_values_previous])
@@ -98,7 +100,43 @@ def get_delta(samples: Array,
   return deltas
 
 
-def get_batch_parallel_free_energy_increment(samples: Array,
+def get_delta_path_grad(samples: Samples,
+                        flow_apply: FlowApply,
+                        inv_flow_apply: FlowApply,
+                        flow_params: FlowParams,
+                        log_density: LogDensityByStep,
+                        step: int) -> Array:
+  """Like get_delta above but with gradient changed to use path estimator.
+
+  See https://arxiv.org/abs/1703.09194 and https://arxiv.org/abs/2207.08219
+
+  Args:
+    samples: Array containing samples of shape (batch,) + sample_shape.
+    flow_apply: function that applies the flow.
+    inv_flow_apply: function that applies the inverse flow.
+    flow_params: parameters of the flow.
+    log_density: function returning the log_density of a sample at given step.
+    step: current step.
+
+  Returns:
+    deltas: an array containing the difference for each sample.
+  """
+  transformed_samples, _ = flow_apply(flow_params, samples)
+  assert_trees_all_equal_shapes(transformed_samples, samples)
+  log_density_target = log_density(step, transformed_samples)
+  def variational_density(params, input_samples):
+    initial_samples, log_det_jacs = inv_flow_apply(params, input_samples)
+    assert_trees_all_equal_shapes(initial_samples, input_samples)
+    log_density_base = log_density(step-1, initial_samples)
+    assert_equal_shape([log_density_base, log_det_jacs])
+    return log_density_base + log_det_jacs
+  log_density_q = variational_density(jax.lax.stop_gradient(flow_params),
+                                      transformed_samples)
+  assert_equal_shape([log_density_target, log_density_q])
+  return log_density_q - log_density_target
+
+
+def get_batch_parallel_free_energy_increment(samples: Samples,
                                              flow_apply: FlowApply,
                                              flow_params: FlowParams,
                                              log_density: LogDensityByStep,
@@ -122,30 +160,42 @@ def get_batch_parallel_free_energy_increment(samples: Array,
   return jnp.mean(deltas)
 
 
-def transport_free_energy_estimator(samples: Array,
+def transport_free_energy_estimator(samples: Samples,
                                     log_weights: Array,
                                     flow_apply: FlowApply,
+                                    inv_flow_apply: Union[FlowApply, Any],
                                     flow_params: FlowParams,
                                     log_density: LogDensityByStep,
-                                    step: int) -> Array:
+                                    step: int,
+                                    use_path_gradient: bool) -> Array:
   """Compute an estimate of the free energy.
 
   Args:
     samples: Array representing samples (batch,) + sample_shape
     log_weights: scalar representing sample weights (batch,)
     flow_apply: function that applies the flow.
+    inv_flow_apply: function that applies the inverse flow or None.
     flow_params: parameters of the flow.
     log_density:  function returning the log_density of a sample at given step.
     step: current step
+    use_path_gradient: Whether or not to modify gradients to use path estimator.
 
   Returns:
     Estimate of the free_energy.
   """
-  deltas = get_delta(samples,
-                     flow_apply,
-                     flow_params,
-                     log_density,
-                     step)
+  if not use_path_gradient:
+    deltas = get_delta(samples,
+                       flow_apply,
+                       flow_params,
+                       log_density,
+                       step)
+  else:
+    deltas = get_delta_path_grad(samples,
+                                 flow_apply,
+                                 inv_flow_apply,
+                                 flow_params,
+                                 log_density,
+                                 step)
   assert_equal_shape([deltas, log_weights])
   return jnp.sum(jax.nn.softmax(log_weights) * deltas)
 
@@ -160,7 +210,7 @@ def get_log_normalizer_increment_no_flow(deltas: Array,
   return increment
 
 
-def get_log_normalizer_increment(samples: Array,
+def get_log_normalizer_increment(samples: Samples,
                                  log_weights: Array,
                                  flow_apply: FlowApply,
                                  flow_params: FlowParams,
@@ -196,7 +246,7 @@ def reweight_no_flow(log_weights_old: Array,
 
 
 def reweight(log_weights_old: Array,
-             samples: Array,
+             samples: Samples,
              flow_apply: FlowApply,
              flow_params: FlowParams,
              log_density: LogDensityByStep,
@@ -224,13 +274,13 @@ def reweight(log_weights_old: Array,
 
 def update_samples_log_weights(
     flow_apply: FlowApply, markov_kernel_apply: MarkovKernelApply,
-    flow_params: FlowParams, samples: Array, log_weights: Array, key: RandomKey,
-    log_density: LogDensityByStep, step: int, use_resampling: bool,
-    use_markov: bool,
+    flow_params: FlowParams, samples: Samples, log_weights: Array,
+    key: RandomKey, log_density: LogDensityByStep, step: int,
+    use_resampling: bool, use_markov: bool,
     resample_threshold: float) -> Tuple[Array, Array, AcceptanceTuple]:
   """Update samples and log weights once the flow has been learnt."""
   transformed_samples, _ = flow_apply(flow_params, samples)
-  assert_equal_shape([transformed_samples, samples])
+  assert_trees_all_equal_shapes(transformed_samples, samples)
   log_weights_new = reweight(log_weights, samples, flow_apply, flow_params,
                              log_density, step)
   assert_equal_shape([log_weights_new, log_weights])
@@ -238,7 +288,7 @@ def update_samples_log_weights(
     subkey, key = jax.random.split(key)
     resampled_samples, log_weights_resampled = resampling.optionally_resample(
         subkey, log_weights_new, transformed_samples, resample_threshold)
-    assert_equal_shape([resampled_samples, transformed_samples])
+    assert_trees_all_equal_shapes(resampled_samples, transformed_samples)
     assert_equal_shape([log_weights_resampled, log_weights_new])
   else:
     resampled_samples = transformed_samples

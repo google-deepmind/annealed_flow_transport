@@ -26,6 +26,7 @@ def get_config():
 
   config.seed = 1
   config.batch_size = 2000
+  config.craft_batch_size = 2000
   config.estimation_batch_size = 6000
   config.sample_shape = (num_dim,)
   config.report_step = 1
@@ -36,14 +37,17 @@ def get_config():
   config.write_samples = False
   config.use_resampling = True
   config.use_markov = True
-  config.algo = 'aft'
+  config.use_path_gradient = False
+  config.algo = 'craft'
   config.vi_iters = 2000
+  config.craft_num_iters = 2000
   config.vi_estimator = 'importance'
 
   optimization_config = ConfigDict()
   optimization_config.free_energy_iters = 4000
   optimization_config.aft_step_size = 1e-3
   optimization_config.vi_step_size = 1e-3
+  optimization_config.craft_step_size = 1e-3
   config.optimization_config = optimization_config
 
   initial_config = ConfigDict()
@@ -83,17 +87,18 @@ def get_config():
   nuts_step_config = ConfigDict()
   nuts_step_config.step_times = [0., 0.25, 0.5, 1.]
   nuts_step_config.step_sizes = [2.0, 2.0, 2.0, 2.0]
-  mcmc_config.hmc_steps_per_iter = 0
+  mcmc_config.hmc_steps_per_iter = 1
   mcmc_config.hmc_num_leapfrog_steps = 10
 
   slice_step_config = ConfigDict()
   slice_step_config.step_times = [0., 0.25, 0.5, 0.75, 1.]
   slice_step_config.step_sizes = [0.9, 0.7, 0.6, 0.5, 0.4]
   mcmc_config.slice_step_config = slice_step_config
-  mcmc_config.slice_steps_per_iter = 1000
+  mcmc_config.slice_steps_per_iter = 0
   mcmc_config.nuts_steps_per_iter = 0
   mcmc_config.slice_max_doublings = 5
   mcmc_config.nuts_max_tree_depth = 4
+  mcmc_config.rwm_steps_per_iter = 0
   mcmc_config.iters = 1
   config.mcmc_config = mcmc_config
 

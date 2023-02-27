@@ -15,10 +15,13 @@
 """Training for all SMC and flow algorithms."""
 
 from typing import Callable, Tuple
+
 from annealed_flow_transport import aft
 from annealed_flow_transport import craft
 from annealed_flow_transport import densities
+from annealed_flow_transport import flow_transport
 from annealed_flow_transport import flows
+from annealed_flow_transport import markov_kernel
 from annealed_flow_transport import samplers
 from annealed_flow_transport import serialize
 from annealed_flow_transport import smc
@@ -28,11 +31,11 @@ import annealed_flow_transport.aft_types as tp
 import chex
 import haiku as hk
 import jax
-import jax.numpy as jnp
 import optax
 
+
 # Type defs.
-Array = jnp.ndarray
+Array = tp.Array
 OptState = tp.OptState
 UpdateFn = tp.UpdateFn
 FlowParams = tp.FlowParams
@@ -91,6 +94,13 @@ def prepare_outer_loop(initial_sampler: InitialSampler,
     An AlgoResultsTuple containing the experiment results.
 
   """
+  num_temps = config.num_temps
+  if is_annealing_algorithm(config.algo):
+    density_by_step = flow_transport.GeometricAnnealingSchedule(
+        initial_log_density, final_log_density, num_temps)
+  if is_markov_algorithm(config.algo):
+    markov_kernel_by_step = markov_kernel.MarkovTransitionKernel(
+        config.mcmc_config, density_by_step, num_temps)
 
   key = jax.random.PRNGKey(config.seed)
 
@@ -126,9 +136,9 @@ def prepare_outer_loop(initial_sampler: InitialSampler,
                                config=config,
                                save_checkpoint=save_checkpoint)
   elif config.algo == 'smc':
-    results = smc.outer_loop_smc(initial_log_density=initial_log_density,
-                                 final_log_density=final_log_density,
+    results = smc.outer_loop_smc(density_by_step=density_by_step,
                                  initial_sampler=initial_sampler,
+                                 markov_kernel_by_step=markov_kernel_by_step,
                                  key=key,
                                  config=config)
   elif config.algo == 'snf':
@@ -137,10 +147,16 @@ def prepare_outer_loop(initial_sampler: InitialSampler,
         value_or_none('snf_boundaries_and_scales',
                       config.optimization_config))
     log_step_output = None
-    results = snf.outer_loop_snf(flow_init_params, flow_forward_fn.apply,
-                                 initial_log_density, final_log_density,
-                                 initial_sampler, key, opt, config,
-                                 log_step_output, save_checkpoint)
+    results = snf.outer_loop_snf(flow_init_params=flow_init_params,
+                                 flow_apply=flow_forward_fn.apply,
+                                 density_by_step=density_by_step,
+                                 markov_kernel_by_step=markov_kernel_by_step,
+                                 initial_sampler=initial_sampler,
+                                 key=key,
+                                 opt=opt,
+                                 config=config,
+                                 log_step_output=log_step_output,
+                                 save_checkpoint=save_checkpoint)
   elif config.algo == 'aft':
     opt = get_optimizer(
         config.optimization_config.aft_step_size,
@@ -152,8 +168,8 @@ def prepare_outer_loop(initial_sampler: InitialSampler,
                                  opt_init_state=opt_init_state,
                                  flow_init_params=flow_init_params,
                                  flow_apply=flow_forward_fn.apply,
-                                 initial_log_density=initial_log_density,
-                                 final_log_density=final_log_density,
+                                 density_by_step=density_by_step,
+                                 markov_kernel_by_step=markov_kernel_by_step,
                                  initial_sampler=initial_sampler,
                                  key=key,
                                  config=config,
@@ -165,12 +181,19 @@ def prepare_outer_loop(initial_sampler: InitialSampler,
                       config.optimization_config))
     opt_init_state = opt.init(flow_init_params)
     log_step_output = None
-    results = craft.outer_loop_craft(opt.update, opt_init_state,
-                                     flow_init_params, flow_forward_fn.apply,
-                                     initial_log_density, final_log_density,
-                                     initial_sampler, key, config,
-                                     log_step_output,
-                                     save_checkpoint)
+    results = craft.outer_loop_craft(
+        opt_update=opt.update,
+        opt_init_state=opt_init_state,
+        flow_init_params=flow_init_params,
+        flow_apply=flow_forward_fn.apply,
+        flow_inv_apply=None,
+        density_by_step=density_by_step,
+        markov_kernel_by_step=markov_kernel_by_step,
+        initial_sampler=initial_sampler,
+        key=key,
+        config=config,
+        log_step_output=log_step_output,
+        save_checkpoint=save_checkpoint)
   else:
     raise NotImplementedError
   return results
@@ -178,6 +201,14 @@ def prepare_outer_loop(initial_sampler: InitialSampler,
 
 def is_flow_algorithm(algo_name):
   return algo_name in ('aft', 'vi', 'craft', 'snf')
+
+
+def is_markov_algorithm(algo_name):
+  return algo_name in ('aft', 'craft', 'snf', 'smc')
+
+
+def is_annealing_algorithm(algo_name):
+  return algo_name in ('aft', 'craft', 'snf', 'smc')
 
 
 def run_experiment(config) -> AlgoResultsTuple:
@@ -189,9 +220,9 @@ def run_experiment(config) -> AlgoResultsTuple:
     An AlgoResultsTuple containing the experiment results.
   """
   log_density_initial = getattr(densities, config.initial_config.density)(
-      config.initial_config, config.sample_shape[0])
+      config.initial_config, config.sample_shape)
   log_density_final = getattr(densities, config.final_config.density)(
-      config.final_config, config.sample_shape[0])
+      config.final_config, config.sample_shape)
   initial_sampler = getattr(samplers,
                             config.initial_sampler_config.initial_sampler)(
                                 config.initial_sampler_config)
@@ -199,7 +230,7 @@ def run_experiment(config) -> AlgoResultsTuple:
   def flow_func(x):
     if is_flow_algorithm(config.algo):
       flow = getattr(flows, config.flow_config.type)(config.flow_config)
-      return jax.vmap(flow)(x)
+      return flow(x)
     else:
       return None
 

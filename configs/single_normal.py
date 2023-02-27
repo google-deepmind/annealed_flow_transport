@@ -36,6 +36,7 @@ def get_config():
   config.stopping_criterion = 'time'
   config.use_resampling = True
   config.use_markov = True
+  config.use_path_gradient = False
   config.algo = 'craft'
   config.evaluation_algo = 'pimh'
   config.num_evaluation_samples = 1000
@@ -69,6 +70,7 @@ def get_config():
 
   flow_config = ConfigDict()
   flow_config.type = 'DiagonalAffine'
+  flow_config.sample_shape = config.sample_shape
 
   config.flow_config = flow_config
 

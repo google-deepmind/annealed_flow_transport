@@ -18,10 +18,9 @@ from typing import Tuple
 
 import annealed_flow_transport.aft_types as tp
 import jax
-import jax.numpy as jnp
 
 RandomKey = tp.RandomKey
-Array = jnp.ndarray
+Array = tp.Array
 
 
 class NormalDistribution(object):

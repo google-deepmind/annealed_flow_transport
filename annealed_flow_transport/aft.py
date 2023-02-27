@@ -26,14 +26,13 @@ from typing import NamedTuple, Tuple
 
 from absl import logging
 from annealed_flow_transport import flow_transport
-from annealed_flow_transport import markov_kernel
 import annealed_flow_transport.aft_types as tp
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 
-Array = jnp.ndarray
+Array = tp.Array
 UpdateFn = tp.UpdateFn
 OptState = tp.OptState
 FlowParams = tp.FlowParams
@@ -301,8 +300,8 @@ def outer_loop_aft(opt_update: UpdateFn,
                    opt_init_state: OptState,
                    flow_init_params: FlowParams,
                    flow_apply: FlowApply,
-                   initial_log_density: LogDensityNoStep,
-                   final_log_density: LogDensityNoStep,
+                   density_by_step: LogDensityByStep,
+                   markov_kernel_by_step: MarkovKernelApply,
                    initial_sampler: InitialSampler,
                    key: RandomKey,
                    config,
@@ -314,8 +313,8 @@ def outer_loop_aft(opt_update: UpdateFn,
     opt_init_state: Optax initial state.
     flow_init_params: Initial parameters for the flow.
     flow_apply: Function that evaluates flow on parameters and samples.
-    initial_log_density: The log density of the starting distribution.
-    final_log_density: The log density of the target distribution.
+    density_by_step: The log density for different annealing temperatures.
+    markov_kernel_by_step: Markov kernel for different annealing temperatures.
     initial_sampler: A function that produces the initial samples.
     key: A Jax random key.
     config: A ConfigDict containing the configuration.
@@ -324,17 +323,14 @@ def outer_loop_aft(opt_update: UpdateFn,
     An AlgoResults tuple containing a summary of the results.
   """
   num_temps = config.num_temps
-  density_by_step = flow_transport.GeometricAnnealingSchedule(
-      initial_log_density, final_log_density, num_temps)
-  markov_kernel_by_step = markov_kernel.MarkovTransitionKernel(
-      config.mcmc_config, density_by_step, num_temps)
 
   def free_energy_short(flow_params: FlowParams,
                         samples: Array,
                         log_weights: Array,
                         step: int) -> Array:
     return flow_transport.transport_free_energy_estimator(
-        samples, log_weights, flow_apply, flow_params, density_by_step, step)
+        samples, log_weights, flow_apply, None, flow_params, density_by_step,
+        step, False)
 
   free_energy_eval = jax.jit(free_energy_short)
   free_energy_and_grad = jax.value_and_grad(free_energy_short)
@@ -382,19 +378,18 @@ def outer_loop_aft(opt_update: UpdateFn,
     subkey, key = jax.random.split(key)
     samples_tuple, log_weights_tuple, vfes_tuple, log_normalizer_increment, test_acceptance = inner_loop_jit(
         subkey, samples_tuple, log_weights_tuple, step)
-    acceptance_nuts = float(np.asarray(test_acceptance[0]))
-    acceptance_hmc = float(np.asarray(test_acceptance[1]))
-    acceptance_rwm = float(np.asarray(test_acceptance[2]))
+    acceptance_hmc = float(np.asarray(test_acceptance[0]))
+    acceptance_rwm = float(np.asarray(test_acceptance[1]))
     log_normalizer_estimate += log_normalizer_increment
     if step % config.report_step == 0:
-      beta = density_by_step.get_beta(step)
+      beta = density_by_step.get_beta(step)  # pytype: disable=attribute-error
       logging.info(
-          'Step %05d: beta %f Acceptance rate NUTS %f Acceptance rate HMC %f Acceptance rate RWM %f',
-          step, beta, acceptance_nuts, acceptance_hmc, acceptance_rwm
+          'Step %05d: beta %f Acceptance rate HMC %f Acceptance rate RWM %f',
+          step, beta, acceptance_hmc, acceptance_rwm
           )
       if log_step_output is not None:
         log_step_output(samples_tuple, log_weights_tuple,
-                        vfes_tuple, log_normalizer_increment, acceptance_nuts,
+                        vfes_tuple, log_normalizer_increment, acceptance_rwm,
                         acceptance_hmc)
   finish_time = time.time()
   delta_time = finish_time - start_time

@@ -19,10 +19,12 @@ import annealed_flow_transport.aft_types as tp
 import chex
 import jax
 import jax.numpy as jnp
-import numpy as np
 
-Array = jnp.ndarray
+Array = tp.Array
 RandomKey = tp.RandomKey
+Samples = tp.Samples
+
+assert_trees_all_equal_shapes = chex.assert_trees_all_equal_shapes
 
 
 def log_effective_sample_size(log_weights: Array) -> Array:
@@ -59,16 +61,17 @@ def simple_resampling(key: RandomKey, log_weights: Array,
   """
   chex.assert_rank(log_weights, 1)
   num_batch = log_weights.shape[0]
-  chex.assert_shape(samples, (num_batch, None))
-  indices = jax.random.categorical(key, log_weights, shape=(samples.shape[0],))
-  resamples = jnp.take(samples, indices, axis=0)
-  log_weights_new = -np.log(log_weights.shape[0])*jnp.ones_like(log_weights)
+  indices = jax.random.categorical(key, log_weights,
+                                   shape=(num_batch,))
+  take_lambda = lambda x: jnp.take(x, indices, axis=0)
+  resamples = jax.tree_util.tree_map(take_lambda, samples)
+  log_weights_new = -jnp.log(log_weights.shape[0])*jnp.ones_like(log_weights)
   chex.assert_equal_shape([log_weights, log_weights_new])
-  chex.assert_equal_shape([resamples, samples])
+  assert_trees_all_equal_shapes(resamples, samples)
   return resamples, log_weights_new
 
 
-def optionally_resample(key: RandomKey, log_weights: Array, samples: Array,
+def optionally_resample(key: RandomKey, log_weights: Array, samples: Samples,
                         resample_threshold: Array) -> Tuple[Array, Array]:
   """Call simple_resampling on log_weights/samples if ESS is below threshold.
 
@@ -91,5 +94,5 @@ def optionally_resample(key: RandomKey, log_weights: Array, samples: Array,
   lambda_resample = lambda x: simple_resampling(*x)
   threshold_sample_size = log_weights.shape[0] * resample_threshold
   log_ess = log_effective_sample_size(log_weights)
-  return jax.lax.cond(log_ess < np.log(threshold_sample_size), lambda_resample,
+  return jax.lax.cond(log_ess < jnp.log(threshold_sample_size), lambda_resample,
                       lambda_no_resample, (key, log_weights, samples))
